@@ -3084,10 +3084,6 @@ var VirtualTreePlugin = class extends import_obsidian3.Plugin {
       void this.migrateLegacyFolderSections();
     });
   }
-  async onunload() {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_VIRTUAL_TREE);
-    await Promise.all(leaves.map((leaf) => leaf.detach()));
-  }
   /**
    * Persists plugin settings and refreshes all open views.
    */

@@ -42,11 +42,6 @@ export default class VirtualTreePlugin extends Plugin {
     });
   }
 
-  public override async onunload(): Promise<void> {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_VIRTUAL_TREE);
-    await Promise.all(leaves.map((leaf) => leaf.detach()));
-  }
-
   /**
    * Persists plugin settings and refreshes all open views.
    */
