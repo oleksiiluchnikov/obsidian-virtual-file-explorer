@@ -10,6 +10,9 @@ import {
   VirtualTreeView,
 } from "./src/virtual-tree";
 
+const OPEN_EXPLORER_COMMAND_ID = "open-virtual-file-explorer";
+const OPEN_EXPLORER_COMMAND_NAME = "Open virtual file explorer";
+
 /**
  * Main plugin entrypoint for the virtual category explorer.
  */
@@ -24,13 +27,13 @@ export default class VirtualTreePlugin extends Plugin {
       (leaf: WorkspaceLeaf) => new VirtualTreeView(leaf, this),
     );
 
-    this.addRibbonIcon("folder-tree", "Open virtual tree", async (): Promise<void> => {
+    this.addRibbonIcon("folder-tree", OPEN_EXPLORER_COMMAND_NAME, async (): Promise<void> => {
       await this.activateView();
     });
 
     this.addCommand({
-      id: "open-virtual-tree",
-      name: "Open virtual tree",
+      id: OPEN_EXPLORER_COMMAND_ID,
+      name: OPEN_EXPLORER_COMMAND_NAME,
       callback: async (): Promise<void> => {
         await this.activateView();
       },

@@ -3058,6 +3058,8 @@ function isDraggedFilePayload(value) {
 }
 
 // main.ts
+var OPEN_EXPLORER_COMMAND_ID = "open-virtual-file-explorer";
+var OPEN_EXPLORER_COMMAND_NAME = "Open virtual file explorer";
 var VirtualTreePlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
@@ -3069,12 +3071,12 @@ var VirtualTreePlugin = class extends import_obsidian3.Plugin {
       VIEW_TYPE_VIRTUAL_TREE,
       (leaf) => new VirtualTreeView(leaf, this)
     );
-    this.addRibbonIcon("folder-tree", "Open virtual tree", async () => {
+    this.addRibbonIcon("folder-tree", OPEN_EXPLORER_COMMAND_NAME, async () => {
       await this.activateView();
     });
     this.addCommand({
-      id: "open-virtual-tree",
-      name: "Open virtual tree",
+      id: OPEN_EXPLORER_COMMAND_ID,
+      name: OPEN_EXPLORER_COMMAND_NAME,
       callback: async () => {
         await this.activateView();
       }
