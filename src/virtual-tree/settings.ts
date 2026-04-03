@@ -110,6 +110,21 @@ export class VirtualTreeSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Category section key")
+      .setDesc("Use this frontmatter key on category notes to group top-level folders into sections.")
+      .addText((text) => {
+        text
+          .setPlaceholder("section")
+          .setValue(this.plugin.settings.categorySectionKey)
+          .onChange(async (value) => {
+            await this.plugin.savePluginSettings({
+              ...this.plugin.settings,
+              categorySectionKey: value.trim() || "section",
+            });
+          });
+      });
+
+    new Setting(containerEl)
       .setName("Note display mode")
       .setDesc("Choose how notes are rendered in the content pane.")
       .addDropdown((dropdown) => {
@@ -121,6 +136,55 @@ export class VirtualTreeSettingTab extends PluginSettingTab {
             await this.plugin.savePluginSettings({
               ...this.plugin.settings,
               noteDisplayMode: value === "cards" ? "cards" : "list",
+            });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Note sort")
+      .setDesc("Choose the default sort used in the content pane toolbar.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("modified", "Modified")
+          .addOption("created", "Created")
+          .addOption("title", "Title")
+          .addOption("property", "Property")
+          .setValue(this.plugin.settings.noteSortMode)
+          .onChange(async (value) => {
+            await this.plugin.savePluginSettings({
+              ...this.plugin.settings,
+              noteSortMode: value === "created" || value === "title" || value === "property" ? value : "modified",
+            });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Note sort direction")
+      .setDesc("Choose the default direction used in the content pane toolbar.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("asc", "Ascending")
+          .addOption("desc", "Descending")
+          .setValue(this.plugin.settings.noteSortDirection)
+          .onChange(async (value) => {
+            await this.plugin.savePluginSettings({
+              ...this.plugin.settings,
+              noteSortDirection: value === "asc" ? "asc" : "desc",
+            });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Note sort property")
+      .setDesc("Use this frontmatter property when the content pane sort mode is set to Property.")
+      .addText((text) => {
+        text
+          .setPlaceholder("priority")
+          .setValue(this.plugin.settings.noteSortProperty)
+          .onChange(async (value) => {
+            await this.plugin.savePluginSettings({
+              ...this.plugin.settings,
+              noteSortProperty: value.trim(),
             });
           });
       });

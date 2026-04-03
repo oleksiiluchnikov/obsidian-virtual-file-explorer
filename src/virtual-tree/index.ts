@@ -9,6 +9,8 @@ export {
   type CategoryPath,
   type CategoryTree,
   type FolderSection,
+  type NoteSortDirection,
+  type NoteSortMode,
   type VirtualTreeSettings,
 } from "./types";
 export { VIEW_TYPE_VIRTUAL_TREE, VirtualTreeView } from "./view";

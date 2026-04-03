@@ -6,6 +6,16 @@ import { TFile } from "obsidian";
 export type NoteDisplayMode = "list" | "cards";
 
 /**
+ * Supported note sort modes for the content pane.
+ */
+export type NoteSortMode = "modified" | "created" | "title" | "property";
+
+/**
+ * Supported note sort directions for the content pane.
+ */
+export type NoteSortDirection = "asc" | "desc";
+
+/**
  * A UI-only sidebar section that groups top-level folders.
  */
 export interface FolderSection {
@@ -26,9 +36,21 @@ export interface VirtualTreeSettings {
   readonly showUnassignedCategoryNotes: boolean;
   /** Basename prefix for category definition notes (e.g. `category - `). */
   readonly categoryNoteFilenamePrefix: string;
+  /** Frontmatter key on category notes used to group top-level folders into sections. */
+  readonly categorySectionKey: string;
   readonly noteDisplayMode: NoteDisplayMode;
+  readonly noteSortMode: NoteSortMode;
+  readonly noteSortDirection: NoteSortDirection;
+  readonly noteSortProperty: string;
+  /** When disabled, note titles can hide the active category prefix in the content pane. */
+  readonly showRealFilename: boolean;
   readonly showPath: boolean;
   readonly zebraRows: boolean;
+  /** Manual UI order for section labels discovered from category note frontmatter. */
+  readonly sectionOrder: readonly string[];
+  /** Manual UI order for top-level category folders. */
+  readonly folderOrder: readonly string[];
+  /** Deprecated UI-only grouping model kept only for one-way migration into category note frontmatter. */
   readonly folderSections: readonly FolderSection[];
 }
 
@@ -40,6 +62,7 @@ export interface CategoryPath {
   readonly segments: readonly string[];
   readonly assignmentValue: string | null;
   readonly icon: string | null;
+  readonly section: string | null;
 }
 
 /**
@@ -54,6 +77,7 @@ export interface CategoryFolderNode {
   readonly directFiles: TFile[];
   assignmentValue: string | null;
   icon: string | null;
+  section: string | null;
 }
 
 /**
@@ -92,8 +116,15 @@ export const DEFAULT_SETTINGS: VirtualTreeSettings = {
   showUncategorizedFolder: false,
   showUnassignedCategoryNotes: true,
   categoryNoteFilenamePrefix: "category - ",
+  categorySectionKey: "section",
   noteDisplayMode: "list",
+  noteSortMode: "modified",
+  noteSortDirection: "desc",
+  noteSortProperty: "",
+  showRealFilename: true,
   showPath: false,
   zebraRows: true,
+  sectionOrder: [],
+  folderOrder: [],
   folderSections: [],
 };

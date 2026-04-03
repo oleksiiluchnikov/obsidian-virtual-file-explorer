@@ -46,6 +46,7 @@ export function buildCategoryTree(
           if (index === categoryPath.segments.length - 1) {
             existingChild.assignmentValue ??= categoryPath.assignmentValue;
             existingChild.icon ??= categoryPath.icon;
+            existingChild.section ??= categoryPath.section;
           }
 
           currentNode = existingChild;
@@ -57,6 +58,7 @@ export function buildCategoryTree(
         if (index === categoryPath.segments.length - 1) {
           nextNode.assignmentValue = categoryPath.assignmentValue;
           nextNode.icon = categoryPath.icon;
+          nextNode.section = categoryPath.section;
         }
 
         currentNode.children.set(segment, nextNode);
@@ -109,7 +111,7 @@ function injectUnassignedCategoryNotes(
       continue;
     }
 
-    const parsedPath = parseCategoryPath(`[[${file.basename}]]`, settings.treatSlashesAsHierarchy, metadataCache);
+    const parsedPath = parseCategoryPath(`[[${file.basename}]]`, settings, metadataCache);
     if (!parsedPath) {
       continue;
     }
@@ -120,6 +122,7 @@ function injectUnassignedCategoryNotes(
       parsedPath.segments,
       parsedPath.assignmentValue,
       parsedPath.icon,
+      parsedPath.section,
     );
   }
 }
@@ -130,6 +133,7 @@ function ensureCategoryPathFromSegments(
   segments: readonly string[],
   assignmentValue: string | null,
   icon: string | null,
+  section: string | null,
 ): void {
   let currentNode = root;
 
@@ -141,6 +145,7 @@ function ensureCategoryPathFromSegments(
       if (index === segments.length - 1) {
         existingChild.assignmentValue ??= assignmentValue;
         existingChild.icon ??= icon;
+        existingChild.section ??= section;
       }
       currentNode = existingChild;
       return;
@@ -151,6 +156,7 @@ function ensureCategoryPathFromSegments(
     if (index === segments.length - 1) {
       nextNode.assignmentValue = assignmentValue;
       nextNode.icon = icon;
+      nextNode.section = section;
     }
 
     currentNode.children.set(segment, nextNode);
@@ -193,7 +199,7 @@ function extractCategoryPaths(
       continue;
     }
 
-    const parsedPath = parseCategoryPath(rawValue, settings.treatSlashesAsHierarchy, metadataCache);
+    const parsedPath = parseCategoryPath(rawValue, settings, metadataCache);
     categoryPathCache.set(rawValue, parsedPath);
     if (parsedPath) {
       parsedPaths.push(parsedPath);
@@ -217,11 +223,11 @@ function normalizeRawCategoryValues(value: unknown): readonly string[] {
 
 function parseCategoryPath(
   rawValue: string,
-  treatSlashesAsHierarchy: boolean,
+  settings: Pick<VirtualTreeSettings, "treatSlashesAsHierarchy" | "categorySectionKey">,
   metadataCache: MetadataCache,
 ): CategoryPath | null {
-  const categoryDetails = resolveCategoryDetails(rawValue, metadataCache);
-  const segments = (treatSlashesAsHierarchy ? rawValue.split("/") : [rawValue])
+  const categoryDetails = resolveCategoryDetails(rawValue, metadataCache, settings.categorySectionKey);
+  const segments = (settings.treatSlashesAsHierarchy ? rawValue.split("/") : [rawValue])
     .map((segment) => normalizeCategorySegment(segment, metadataCache))
     .filter((segment) => segment.length > 0);
 
@@ -234,13 +240,15 @@ function parseCategoryPath(
     segments,
     assignmentValue: categoryDetails.assignmentValue,
     icon: categoryDetails.icon,
+    section: categoryDetails.section,
   };
 }
 
 function resolveCategoryDetails(
   rawValue: string,
   metadataCache: MetadataCache,
-): Pick<CategoryPath, "assignmentValue" | "icon"> {
+  categorySectionKey: string,
+): Pick<CategoryPath, "assignmentValue" | "icon" | "section"> {
   const trimmedValue = rawValue.trim();
   const wikilinkMatch = trimmedValue.match(/^\[\[(.+?)\]\]$/u);
 
@@ -248,19 +256,21 @@ function resolveCategoryDetails(
     return {
       assignmentValue: trimmedValue.length > 0 ? trimmedValue : null,
       icon: null,
+      section: null,
     };
   }
 
   const targetPart = wikilinkMatch[1].split("|")[0]?.split("#")[0]?.trim() ?? "";
   const destination = targetPart.length > 0 ? metadataCache.getFirstLinkpathDest(targetPart, "") : null;
   const destinationPath = destination?.path;
-  const frontmatterIcon = destinationPath
-    ? metadataCache.getFileCache(destination)?.frontmatter?.icon
-    : null;
+  const frontmatter = destinationPath ? metadataCache.getFileCache(destination)?.frontmatter : null;
+  const frontmatterIcon = frontmatter?.icon;
+  const frontmatterSection = frontmatter?.[categorySectionKey];
 
   return {
     assignmentValue: destination ? `[[${destination.basename}]]` : trimmedValue,
     icon: typeof frontmatterIcon === "string" && frontmatterIcon.trim().length > 0 ? frontmatterIcon.trim() : null,
+    section: normalizeSectionLabel(frontmatterSection),
   };
 }
 
@@ -302,6 +312,15 @@ function cleanupCategoryLabel(label: string): string {
   return label.replace(/^category\s*-\s*/iu, "").trim();
 }
 
+function normalizeSectionLabel(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+  return trimmedValue.length > 0 ? trimmedValue : null;
+}
+
 function deduplicatePaths(paths: readonly CategoryPath[]): readonly CategoryPath[] {
   const byId = new Map<string, CategoryPath>();
 
@@ -331,6 +350,7 @@ function createNode(id: string, name: string, depth: number): CategoryFolderNode
     directFiles: [],
     assignmentValue: null,
     icon: null,
+    section: null,
   };
 }
 

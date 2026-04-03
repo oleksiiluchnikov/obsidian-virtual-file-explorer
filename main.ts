@@ -1,6 +1,7 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Plugin, TFile, WorkspaceLeaf } from "obsidian";
 
 import {
+  buildCategoryTree,
   DEFAULT_SETTINGS,
   type FolderSection,
   VIEW_TYPE_VIRTUAL_TREE,
@@ -36,6 +37,9 @@ export default class VirtualTreePlugin extends Plugin {
     });
 
     this.addSettingTab(new VirtualTreeSettingTab(this.app, this));
+    this.app.workspace.onLayoutReady(() => {
+      void this.migrateLegacyFolderSections();
+    });
   }
 
   public override async onunload(): Promise<void> {
@@ -100,6 +104,55 @@ export default class VirtualTreePlugin extends Plugin {
     await leaf.setViewState({ type: VIEW_TYPE_VIRTUAL_TREE, active: false });
     return leaf;
   }
+
+  private async migrateLegacyFolderSections(): Promise<void> {
+    if (this.settings.folderSections.length === 0) {
+      return;
+    }
+
+    const tree = buildCategoryTree(this.app.vault.getMarkdownFiles(), this.app.metadataCache, this.settings);
+
+    for (const section of this.settings.folderSections) {
+      for (const folderId of section.folderIds) {
+        const node = tree.folderLookup.get(folderId);
+        const categoryFile = node ? this.resolveCategoryFileFromAssignment(node.assignmentValue) : null;
+        if (!categoryFile) {
+          continue;
+        }
+
+        await this.app.fileManager.processFrontMatter(categoryFile, (frontmatter) => {
+          frontmatter[this.settings.categorySectionKey] = section.title;
+        });
+      }
+    }
+
+    await this.savePluginSettings({
+      ...this.settings,
+      sectionOrder: mergeSectionOrder(
+        this.settings.sectionOrder,
+        this.settings.folderSections.map((section) => section.title),
+      ),
+      folderSections: [],
+    });
+  }
+
+  private resolveCategoryFileFromAssignment(assignmentValue: string | null): TFile | null {
+    if (!assignmentValue) {
+      return null;
+    }
+
+    const wikilinkMatch = assignmentValue.match(/^\[\[(.+?)\]\]$/u);
+    if (!wikilinkMatch) {
+      return null;
+    }
+
+    const linkpath = wikilinkMatch[1].split("|")[0]?.split("#")[0]?.trim() ?? "";
+    if (linkpath.length === 0) {
+      return null;
+    }
+
+    return this.app.metadataCache.getFirstLinkpathDest(linkpath, "");
+  }
 }
 
 function readVirtualTreeSettings(value: unknown): Partial<VirtualTreeSettings> {
@@ -122,11 +175,29 @@ function readVirtualTreeSettings(value: unknown): Partial<VirtualTreeSettings> {
       ? { showUnassignedCategoryNotes: candidate.showUnassignedCategoryNotes }
       : {}),
     ...(categoryNoteFilenamePrefix !== null ? { categoryNoteFilenamePrefix } : {}),
+    ...(typeof candidate.categorySectionKey === "string" ? { categorySectionKey: candidate.categorySectionKey } : {}),
     ...(candidate.noteDisplayMode === "list" || candidate.noteDisplayMode === "cards"
       ? { noteDisplayMode: candidate.noteDisplayMode }
       : {}),
+    ...(candidate.noteSortMode === "modified"
+      || candidate.noteSortMode === "created"
+      || candidate.noteSortMode === "title"
+      || candidate.noteSortMode === "property"
+      ? { noteSortMode: candidate.noteSortMode }
+      : {}),
+    ...(candidate.noteSortDirection === "asc" || candidate.noteSortDirection === "desc"
+      ? { noteSortDirection: candidate.noteSortDirection }
+      : {}),
+    ...(typeof candidate.noteSortProperty === "string" ? { noteSortProperty: candidate.noteSortProperty } : {}),
+    ...(typeof candidate.showRealFilename === "boolean" ? { showRealFilename: candidate.showRealFilename } : {}),
     ...(typeof candidate.showPath === "boolean" ? { showPath: candidate.showPath } : {}),
     ...(typeof candidate.zebraRows === "boolean" ? { zebraRows: candidate.zebraRows } : {}),
+    ...(Array.isArray(candidate.sectionOrder)
+      ? { sectionOrder: candidate.sectionOrder.filter((value): value is string => typeof value === "string") }
+      : {}),
+    ...(Array.isArray(candidate.folderOrder)
+      ? { folderOrder: candidate.folderOrder.filter((value): value is string => typeof value === "string") }
+      : {}),
     ...(Array.isArray(candidate.folderSections)
       ? { folderSections: candidate.folderSections.filter(isFolderSection) }
       : {}),
@@ -163,5 +234,25 @@ function shouldRebuildTreeForSettingsChange(
     || currentSettings.showUncategorized !== nextSettings.showUncategorized
     || currentSettings.showUncategorizedFolder !== nextSettings.showUncategorizedFolder
     || currentSettings.showUnassignedCategoryNotes !== nextSettings.showUnassignedCategoryNotes
-    || currentSettings.categoryNoteFilenamePrefix !== nextSettings.categoryNoteFilenamePrefix;
+    || currentSettings.categoryNoteFilenamePrefix !== nextSettings.categoryNoteFilenamePrefix
+    || currentSettings.categorySectionKey !== nextSettings.categorySectionKey;
+}
+
+function mergeSectionOrder(existingOrder: readonly string[], nextValues: readonly string[]): readonly string[] {
+  const mergedOrder: string[] = [];
+  const seenLabels = new Set<string>();
+
+  for (const value of [...existingOrder, ...nextValues]) {
+    const trimmedValue = value.trim();
+    const normalizedValue = trimmedValue.toLocaleLowerCase();
+
+    if (trimmedValue.length === 0 || seenLabels.has(normalizedValue)) {
+      continue;
+    }
+
+    seenLabels.add(normalizedValue);
+    mergedOrder.push(trimmedValue);
+  }
+
+  return mergedOrder;
 }
