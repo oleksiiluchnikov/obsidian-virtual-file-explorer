@@ -159,7 +159,7 @@ export class VirtualTreeView extends ItemView {
   }
 
   public override getDisplayText(): string {
-    return "Virtual tree";
+    return "Virtual Tree Explorer";
   }
 
   public override getIcon(): string {

@@ -1,9 +1,9 @@
 {
-  "id": "virtual-tree",
-  "name": "Virtual Tree",
+  "id": "virtual-tree-explorer",
+  "name": "Virtual Tree Explorer",
   "version": "0.1.0",
   "minAppVersion": "1.5.12",
-  "description": "Alternative note explorer with virtual folders from frontmatter categories.",
+  "description": "Explorer and workflow framework for flat Obsidian vaults powered by frontmatter categories.",
   "author": "",
   "isDesktopOnly": false
 }

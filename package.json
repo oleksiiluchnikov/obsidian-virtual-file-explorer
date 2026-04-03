@@ -1,7 +1,7 @@
 {
-  "name": "virtual-tree",
+  "name": "virtual-tree-explorer",
   "version": "0.1.0",
-  "description": "Alternative note explorer with virtual folders from frontmatter categories.",
+  "description": "Explorer and workflow framework for flat Obsidian vaults powered by frontmatter categories.",
   "main": "main.js",
   "packageManager": "bun@1.3.11",
   "scripts": {

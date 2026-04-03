@@ -528,7 +528,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     return VIEW_TYPE_VIRTUAL_TREE;
   }
   getDisplayText() {
-    return "Virtual tree";
+    return "Virtual Tree Explorer";
   }
   getIcon() {
     return "folder-tree";
