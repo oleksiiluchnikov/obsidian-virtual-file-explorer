@@ -1,0 +1,5 @@
+node_modules/
+.obsidian-dev.log
+data.json
+virtual-tree-mvp.png
+.DS_Store
