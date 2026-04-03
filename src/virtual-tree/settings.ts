@@ -77,6 +77,39 @@ export class VirtualTreeSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Show unassigned category notes")
+      .setDesc(
+        "Show folders for category definition notes (matching the prefix below) even when no note lists that category in frontmatter yet.",
+      )
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.showUnassignedCategoryNotes)
+          .onChange(async (value) => {
+            await this.plugin.savePluginSettings({
+              ...this.plugin.settings,
+              showUnassignedCategoryNotes: value,
+            });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Category note filename prefix")
+      .setDesc(
+        "Treat notes whose filename starts with this text as category definitions. Their folder labels are resolved the same way as linked category notes.",
+      )
+      .addText((text) => {
+        text
+          .setPlaceholder("category - ")
+          .setValue(this.plugin.settings.categoryNoteFilenamePrefix)
+          .onChange(async (value) => {
+            await this.plugin.savePluginSettings({
+              ...this.plugin.settings,
+              categoryNoteFilenamePrefix: value,
+            });
+          });
+      });
+
+    new Setting(containerEl)
       .setName("Note display mode")
       .setDesc("Choose how notes are rendered in the content pane.")
       .addDropdown((dropdown) => {

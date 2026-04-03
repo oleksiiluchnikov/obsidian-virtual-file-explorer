@@ -34,19 +34,23 @@ var DEFAULT_SETTINGS = {
   treatSlashesAsHierarchy: true,
   showUncategorized: true,
   showUncategorizedFolder: false,
+  showUnassignedCategoryNotes: true,
+  categoryNoteFilenamePrefix: "category - ",
   noteDisplayMode: "list",
   showPath: false,
-  zebraRows: true
+  zebraRows: true,
+  folderSections: []
 };
 
 // src/virtual-tree/buildCategoryTree.ts
 function buildCategoryTree(files, metadataCache, settings) {
-  const sourceFiles = files.filter((file) => !isIgnoredVaultPath(file.path));
+  const sourceFiles = sortFiles(files.filter((file) => !isIgnoredVaultPath(file.path)));
   const root = createNode(ROOT_FOLDER_ID, "All notes", 0);
   const folderLookup = /* @__PURE__ */ new Map([[ROOT_FOLDER_ID, root]]);
   const uncategorizedFiles = [];
-  for (const file of sortFiles(sourceFiles)) {
-    const categoryPaths = extractCategoryPaths(file, metadataCache, settings);
+  const categoryPathCache = /* @__PURE__ */ new Map();
+  for (const file of sourceFiles) {
+    const categoryPaths = extractCategoryPaths(file, metadataCache, settings, categoryPathCache);
     if (categoryPaths.length === 0) {
       if (settings.showUncategorized) {
         uncategorizedFiles.push(file);
@@ -78,37 +82,96 @@ function buildCategoryTree(files, metadataCache, settings) {
       currentNode.directFiles.push(file);
     }
   }
-  const descendantFilesByFolderId = /* @__PURE__ */ new Map();
-  descendantFilesByFolderId.set(ROOT_FOLDER_ID, sortFiles([...sourceFiles]));
-  collectDescendantFiles(root, descendantFilesByFolderId);
+  injectUnassignedCategoryNotes(root, folderLookup, sourceFiles, metadataCache, settings);
   if (settings.showUncategorized && settings.showUncategorizedFolder && uncategorizedFiles.length > 0) {
     const uncategorizedNode = createNode(UNCATEGORIZED_FOLDER_ID, UNCATEGORIZED_FOLDER_NAME, 1);
-    uncategorizedNode.directFiles.push(...sortFiles(uncategorizedFiles));
+    uncategorizedNode.directFiles.push(...uncategorizedFiles);
     root.children.set(UNCATEGORIZED_FOLDER_NAME, uncategorizedNode);
     folderLookup.set(UNCATEGORIZED_FOLDER_ID, uncategorizedNode);
-    descendantFilesByFolderId.set(UNCATEGORIZED_FOLDER_ID, sortFiles(uncategorizedFiles));
   }
+  finalizeSortedChildren(root);
+  const descendantFilesByFolderId = /* @__PURE__ */ new Map();
+  collectDescendantFiles(root, descendantFilesByFolderId);
+  descendantFilesByFolderId.set(ROOT_FOLDER_ID, sourceFiles);
   return {
     root,
     folderLookup,
     descendantFilesByFolderId,
-    allFiles: sortFiles([...sourceFiles]),
-    uncategorizedFiles: sortFiles(uncategorizedFiles)
+    allFiles: sourceFiles,
+    uncategorizedFiles
   };
 }
-function collectDescendantFiles(node, descendantFilesByFolderId) {
-  const collectedFiles = [...node.directFiles];
-  for (const child of sortNodes([...node.children.values()])) {
-    collectedFiles.push(...collectDescendantFiles(child, descendantFilesByFolderId));
+function injectUnassignedCategoryNotes(root, folderLookup, files, metadataCache, settings) {
+  const prefix = settings.categoryNoteFilenamePrefix.trim();
+  if (!settings.showUnassignedCategoryNotes || prefix.length === 0) {
+    return;
   }
-  const sortedFiles = sortFiles(collectedFiles);
-  descendantFilesByFolderId.set(node.id, sortedFiles);
-  return sortedFiles;
+  for (const file of files) {
+    if (!file.basename.startsWith(prefix)) {
+      continue;
+    }
+    const parsedPath = parseCategoryPath(`[[${file.basename}]]`, settings.treatSlashesAsHierarchy, metadataCache);
+    if (!parsedPath) {
+      continue;
+    }
+    ensureCategoryPathFromSegments(
+      root,
+      folderLookup,
+      parsedPath.segments,
+      parsedPath.assignmentValue,
+      parsedPath.icon
+    );
+  }
 }
-function extractCategoryPaths(file, metadataCache, settings) {
+function ensureCategoryPathFromSegments(root, folderLookup, segments, assignmentValue, icon) {
+  let currentNode = root;
+  segments.forEach((segment, index) => {
+    const nodeId = segments.slice(0, index + 1).join("/");
+    const existingChild = currentNode.children.get(segment);
+    if (existingChild) {
+      if (index === segments.length - 1) {
+        existingChild.assignmentValue ?? (existingChild.assignmentValue = assignmentValue);
+        existingChild.icon ?? (existingChild.icon = icon);
+      }
+      currentNode = existingChild;
+      return;
+    }
+    const nextNode = createNode(nodeId, segment, index + 1);
+    if (index === segments.length - 1) {
+      nextNode.assignmentValue = assignmentValue;
+      nextNode.icon = icon;
+    }
+    currentNode.children.set(segment, nextNode);
+    folderLookup.set(nextNode.id, nextNode);
+    currentNode = nextNode;
+  });
+}
+function collectDescendantFiles(node, descendantFilesByFolderId) {
+  let collectedFiles = node.directFiles;
+  for (const child of node.sortedChildren) {
+    collectedFiles = mergeSortedFiles(collectedFiles, collectDescendantFiles(child, descendantFilesByFolderId));
+  }
+  descendantFilesByFolderId.set(node.id, collectedFiles);
+  return collectedFiles;
+}
+function extractCategoryPaths(file, metadataCache, settings, categoryPathCache) {
   const frontmatterValue = metadataCache.getFileCache(file)?.frontmatter?.[settings.frontmatterKey];
   const rawValues = normalizeRawCategoryValues(frontmatterValue);
-  const parsedPaths = rawValues.map((rawValue) => parseCategoryPath(rawValue, settings.treatSlashesAsHierarchy, metadataCache)).filter((path) => path !== null);
+  const parsedPaths = [];
+  for (const rawValue of rawValues) {
+    if (categoryPathCache.has(rawValue)) {
+      const cachedPath = categoryPathCache.get(rawValue) ?? null;
+      if (cachedPath) {
+        parsedPaths.push(cachedPath);
+      }
+      continue;
+    }
+    const parsedPath = parseCategoryPath(rawValue, settings.treatSlashesAsHierarchy, metadataCache);
+    categoryPathCache.set(rawValue, parsedPath);
+    if (parsedPath) {
+      parsedPaths.push(parsedPath);
+    }
+  }
   return parsedPaths.length > 0 ? deduplicatePaths(parsedPaths) : [];
 }
 function normalizeRawCategoryValues(value) {
@@ -185,12 +248,20 @@ function deduplicatePaths(paths) {
   }
   return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
+function finalizeSortedChildren(node) {
+  const sortedChildren = sortNodes([...node.children.values()]);
+  node.sortedChildren = sortedChildren;
+  for (const child of sortedChildren) {
+    finalizeSortedChildren(child);
+  }
+}
 function createNode(id, name, depth) {
   return {
     id,
     name,
     depth,
     children: /* @__PURE__ */ new Map(),
+    sortedChildren: [],
     directFiles: [],
     assignmentValue: null,
     icon: null
@@ -200,10 +271,40 @@ function sortNodes(nodes) {
   return [...nodes].sort((left, right) => left.name.localeCompare(right.name));
 }
 function sortFiles(files) {
-  return [...files].sort((left, right) => {
-    const nameComparison = left.basename.localeCompare(right.basename);
-    return nameComparison !== 0 ? nameComparison : left.path.localeCompare(right.path);
-  });
+  return [...files].sort(compareFiles);
+}
+function mergeSortedFiles(leftFiles, rightFiles) {
+  if (leftFiles.length === 0) {
+    return rightFiles;
+  }
+  if (rightFiles.length === 0) {
+    return leftFiles;
+  }
+  const mergedFiles = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < leftFiles.length && rightIndex < rightFiles.length) {
+    if (compareFiles(leftFiles[leftIndex], rightFiles[rightIndex]) <= 0) {
+      mergedFiles.push(leftFiles[leftIndex]);
+      leftIndex += 1;
+    } else {
+      mergedFiles.push(rightFiles[rightIndex]);
+      rightIndex += 1;
+    }
+  }
+  while (leftIndex < leftFiles.length) {
+    mergedFiles.push(leftFiles[leftIndex]);
+    leftIndex += 1;
+  }
+  while (rightIndex < rightFiles.length) {
+    mergedFiles.push(rightFiles[rightIndex]);
+    rightIndex += 1;
+  }
+  return mergedFiles;
+}
+function compareFiles(left, right) {
+  const nameComparison = left.basename.localeCompare(right.basename);
+  return nameComparison !== 0 ? nameComparison : left.path.localeCompare(right.path);
 }
 
 // src/virtual-tree/settings.ts
@@ -249,6 +350,26 @@ var VirtualTreeSettingTab = class extends import_obsidian.PluginSettingTab {
         });
       });
     });
+    new import_obsidian.Setting(containerEl).setName("Show unassigned category notes").setDesc(
+      "Show folders for category definition notes (matching the prefix below) even when no note lists that category in frontmatter yet."
+    ).addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.showUnassignedCategoryNotes).onChange(async (value) => {
+        await this.plugin.savePluginSettings({
+          ...this.plugin.settings,
+          showUnassignedCategoryNotes: value
+        });
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Category note filename prefix").setDesc(
+      "Treat notes whose filename starts with this text as category definitions. Their folder labels are resolved the same way as linked category notes."
+    ).addText((text) => {
+      text.setPlaceholder("category - ").setValue(this.plugin.settings.categoryNoteFilenamePrefix).onChange(async (value) => {
+        await this.plugin.savePluginSettings({
+          ...this.plugin.settings,
+          categoryNoteFilenamePrefix: value
+        });
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("Note display mode").setDesc("Choose how notes are rendered in the content pane.").addDropdown((dropdown) => {
       dropdown.addOption("list", "List").addOption("cards", "Cards").setValue(this.plugin.settings.noteDisplayMode).onChange(async (value) => {
         await this.plugin.savePluginSettings({
@@ -281,17 +402,34 @@ var import_obsidian2 = require("obsidian");
 var VIEW_TYPE_VIRTUAL_TREE = "virtual-tree-view";
 var DRAGGED_FILE_PATH_MIME = "application/x-virtual-tree-file-path";
 var DRAGGED_FILE_PAYLOAD_MIME = "application/x-virtual-tree-file-payload";
+var DRAGGED_FOLDER_ID_MIME = "application/x-virtual-tree-folder-id";
+var DRAGGED_SECTION_ID_MIME = "application/x-virtual-tree-section-id";
+var UNGROUPED_SECTION_ID = "__ungrouped__";
+var LIST_VIRTUALIZATION_THRESHOLD = 200;
+var LIST_VIRTUALIZATION_OVERSCAN = 12;
+var LIST_ROW_HEIGHT = 32;
+var LIST_ROW_HEIGHT_WITH_PATH = 48;
 var VirtualTreeView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.collapsedFolderIds = /* @__PURE__ */ new Set();
     this.selectedFolderId = ROOT_FOLDER_ID;
+    this.selectedSectionId = null;
     this.refreshTimeoutId = null;
     this.cachedTree = null;
     this.isTreeDirty = true;
+    this.activeDraggedFilePayload = null;
+    this.activeDropTargetEl = null;
+    this.sidebarPaneEl = null;
+    this.contentPaneEl = null;
+    this.contentScrollEl = null;
+    this.virtualizedListResizeObserver = null;
+    this.virtualizedListFrameId = null;
+    this.suppressClickUntil = 0;
+    this.isOrganizingFolderSections = false;
+    this.activeSectionOrganizeTargetEl = null;
     this.plugin = plugin;
     this.registerEvent(this.app.metadataCache.on("changed", () => this.requestRefresh()));
-    this.registerEvent(this.app.metadataCache.on("resolved", () => this.requestRefresh()));
     this.registerEvent(this.app.vault.on("create", () => this.requestRefresh()));
     this.registerEvent(this.app.vault.on("delete", () => this.requestRefresh()));
     this.registerEvent(this.app.vault.on("rename", () => this.requestRefresh()));
@@ -307,6 +445,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
   }
   async onOpen() {
     this.addAction("refresh-cw", "Refresh virtual tree", () => {
+      this.isTreeDirty = true;
       this.render();
     });
     this.render();
@@ -316,35 +455,64 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       window.clearTimeout(this.refreshTimeoutId);
       this.refreshTimeoutId = null;
     }
+    this.cleanupVirtualizedList();
+    this.clearActiveDropTarget();
+    this.clearActiveSectionOrganizeTarget();
+    this.activeDraggedFilePayload = null;
+    this.isOrganizingFolderSections = false;
+    this.sidebarPaneEl = null;
+    this.contentPaneEl = null;
   }
   /**
    * Debounces rerenders when vault metadata changes rapidly.
    */
-  requestRefresh() {
+  requestRefresh(treeDirty = true) {
     if (this.refreshTimeoutId !== null) {
       window.clearTimeout(this.refreshTimeoutId);
     }
     this.refreshTimeoutId = window.setTimeout(() => {
       this.refreshTimeoutId = null;
-      this.isTreeDirty = true;
+      this.isTreeDirty = this.isTreeDirty || treeDirty;
       this.render();
     }, 75);
   }
-  render() {
+  render(scope = "all", resetContentScroll = false) {
     const tree = this.getTree();
+    const folderSections = this.getSidebarFolderSections(tree);
     const selectedNode = tree.folderLookup.get(this.selectedFolderId) ?? tree.root;
+    const selectedSection = this.selectedSectionId ? folderSections.find((section) => section.id === this.selectedSectionId) ?? null : null;
     this.selectedFolderId = selectedNode.id;
+    this.selectedSectionId = selectedSection?.id ?? null;
+    this.ensureLayout();
+    if ((scope === "all" || scope === "sidebar") && this.sidebarPaneEl) {
+      const sidebarScrollTop = this.sidebarPaneEl.scrollTop;
+      this.renderSidebar(this.sidebarPaneEl, tree, folderSections);
+      this.sidebarPaneEl.scrollTop = sidebarScrollTop;
+    }
+    if ((scope === "all" || scope === "content") && this.contentPaneEl) {
+      const previousScrollTop = resetContentScroll ? 0 : this.contentScrollEl?.scrollTop ?? 0;
+      if (selectedSection) {
+        this.renderSectionContent(this.contentPaneEl, selectedSection, tree, previousScrollTop);
+      } else {
+        this.renderContent(
+          this.contentPaneEl,
+          selectedNode,
+          tree.descendantFilesByFolderId.get(selectedNode.id) ?? [],
+          previousScrollTop
+        );
+      }
+    }
+  }
+  ensureLayout() {
+    if (this.sidebarPaneEl && this.contentPaneEl) {
+      return;
+    }
+    this.cleanupVirtualizedList();
     this.contentEl.empty();
     this.contentEl.addClass("virtual-tree-view");
     const layoutEl = this.contentEl.createDiv({ cls: "virtual-tree-layout" });
-    const sidebarEl = layoutEl.createDiv({ cls: "virtual-tree-sidebar" });
-    const contentEl = layoutEl.createDiv({ cls: "virtual-tree-content" });
-    this.renderSidebar(sidebarEl, tree);
-    this.renderContent(
-      contentEl,
-      selectedNode,
-      tree.descendantFilesByFolderId.get(selectedNode.id) ?? []
-    );
+    this.sidebarPaneEl = layoutEl.createDiv({ cls: "virtual-tree-sidebar" });
+    this.contentPaneEl = layoutEl.createDiv({ cls: "virtual-tree-content" });
   }
   getTree() {
     if (this.cachedTree && !this.isTreeDirty) {
@@ -358,14 +526,40 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     this.isTreeDirty = false;
     return this.cachedTree;
   }
-  renderSidebar(containerEl, tree) {
+  renderSidebar(containerEl, tree, folderSections) {
+    containerEl.empty();
     const headerEl = containerEl.createDiv({ cls: "virtual-tree-sidebar-header" });
     headerEl.createEl("h3", { text: "Folders" });
+    const actionsEl = headerEl.createDiv({ cls: "virtual-tree-sidebar-actions" });
+    if (this.isOrganizingFolderSections && this.plugin.settings.folderSections.length > 0) {
+      const addSectionButtonEl = actionsEl.createEl("button", {
+        cls: "clickable-icon",
+        attr: {
+          "aria-label": "Add section",
+          "data-tooltip-position": "top",
+          type: "button"
+        }
+      });
+      (0, import_obsidian2.setIcon)(addSectionButtonEl, "plus");
+      addSectionButtonEl.addEventListener("click", () => {
+        void this.addFolderSection();
+      });
+    }
+    const organizeSectionsButtonEl = actionsEl.createEl("button", {
+      cls: this.isOrganizingFolderSections ? "clickable-icon virtual-tree-sidebar-organize-button is-active" : "clickable-icon virtual-tree-sidebar-organize-button",
+      attr: {
+        "aria-label": this.isOrganizingFolderSections ? "Done organizing sections" : "Organize folder sections",
+        "data-tooltip-position": "top",
+        type: "button"
+      }
+    });
+    (0, import_obsidian2.setIcon)(organizeSectionsButtonEl, this.isOrganizingFolderSections ? "check" : "pencil");
+    organizeSectionsButtonEl.addEventListener("click", () => {
+      void this.toggleOrganizeFolderSections();
+    });
     const foldersEl = containerEl.createDiv({ cls: "virtual-tree-folders" });
     this.renderFolderRow(foldersEl, tree.root, tree.descendantFilesByFolderId.get(ROOT_FOLDER_ID) ?? []);
-    for (const childNode of sortFolderNodes(tree.root.children.values())) {
-      this.renderFolderNode(foldersEl, childNode, tree.descendantFilesByFolderId);
-    }
+    this.renderFolderSections(foldersEl, tree, folderSections);
     if (tree.uncategorizedFiles.length > 0) {
       const sectionEl = containerEl.createDiv({ cls: "virtual-tree-sidebar-section" });
       const sectionHeaderEl = sectionEl.createDiv({ cls: "virtual-tree-sidebar-section-header" });
@@ -380,10 +574,114 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       }
     }
   }
+  renderFolderSections(containerEl, tree, folderSections) {
+    const topLevelNodes = tree.root.sortedChildren;
+    const configuredSections = this.plugin.settings.folderSections;
+    if (configuredSections.length === 0 && !this.isOrganizingFolderSections) {
+      for (const childNode of topLevelNodes) {
+        this.renderFolderNode(containerEl, childNode, tree.descendantFilesByFolderId);
+      }
+      return;
+    }
+    for (const section of folderSections) {
+      const sectionEl = containerEl.createDiv({ cls: "virtual-tree-folder-section" });
+      if (section.id === this.selectedSectionId) {
+        sectionEl.addClass("is-selected");
+      }
+      if (this.isOrganizingFolderSections) {
+        sectionEl.addClass("is-organizing");
+      }
+      const sectionHeaderEl = sectionEl.createDiv({ cls: "virtual-tree-folder-section-header" });
+      if (this.isOrganizingFolderSections && !section.isUngrouped) {
+        const headerRowEl = sectionHeaderEl.createDiv({ cls: "virtual-tree-folder-section-header-row" });
+        const gripEl = headerRowEl.createEl("button", {
+          cls: "clickable-icon virtual-tree-section-organize-handle",
+          attr: {
+            "aria-label": "Drag to reorder section",
+            "data-tooltip-position": "top",
+            draggable: "true",
+            type: "button"
+          }
+        });
+        (0, import_obsidian2.setIcon)(gripEl, "grip-vertical");
+        this.attachSectionReorderDrag(gripEl, section.id);
+        const titleInputEl = headerRowEl.createEl("input", {
+          cls: "virtual-tree-section-title-input",
+          attr: {
+            "aria-label": "Section name",
+            type: "text"
+          },
+          value: section.title
+        });
+        titleInputEl.addEventListener("click", (event) => {
+          event.stopPropagation();
+        });
+        titleInputEl.addEventListener("keydown", (event) => {
+          event.stopPropagation();
+        });
+        titleInputEl.addEventListener("blur", () => {
+          void this.updateSectionTitleFromInput(section.id, titleInputEl.value);
+        });
+        headerRowEl.createSpan({
+          cls: "virtual-tree-sidebar-section-count",
+          text: `${section.folderNodes.length}`
+        });
+        const deleteSectionButtonEl = headerRowEl.createEl("button", {
+          cls: "clickable-icon",
+          attr: {
+            "aria-label": "Delete section",
+            "data-tooltip-position": "top",
+            type: "button"
+          }
+        });
+        (0, import_obsidian2.setIcon)(deleteSectionButtonEl, "trash");
+        deleteSectionButtonEl.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void this.deleteFolderSection(section.id);
+        });
+      } else {
+        sectionHeaderEl.setAttribute("role", "button");
+        sectionHeaderEl.setAttribute("tabindex", "0");
+        sectionHeaderEl.createSpan({ text: section.title });
+        sectionHeaderEl.createSpan({
+          cls: "virtual-tree-sidebar-section-count",
+          text: `${section.folderNodes.length}`
+        });
+        sectionHeaderEl.addEventListener("click", () => {
+          if (this.shouldIgnorePointerActivation()) {
+            return;
+          }
+          this.selectedSectionId = section.id;
+          this.render("all", true);
+        });
+        sectionHeaderEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            this.selectedSectionId = section.id;
+            this.render("all", true);
+          }
+        });
+      }
+      if (this.isOrganizingFolderSections) {
+        this.attachSectionOrganizeDropTarget(sectionEl, section);
+      }
+      if (section.folderNodes.length === 0) {
+        sectionEl.createDiv({
+          cls: "virtual-tree-folder-section-empty",
+          text: section.isUngrouped ? "No ungrouped folders." : "No folders assigned yet."
+        });
+        continue;
+      }
+      const sectionFoldersEl = sectionEl.createDiv({ cls: "virtual-tree-folders" });
+      for (const childNode of section.folderNodes) {
+        this.renderFolderNode(sectionFoldersEl, childNode, tree.descendantFilesByFolderId);
+      }
+    }
+  }
   renderFolderNode(containerEl, node, descendantFilesByFolderId) {
     const groupEl = containerEl.createDiv({ cls: "virtual-tree-folder-group" });
     const rowEl = groupEl.createDiv({ cls: "virtual-tree-folder-row" });
-    const hasChildren = node.children.size > 0;
+    const hasChildren = node.sortedChildren.length > 0;
     if (hasChildren) {
       const toggleEl = rowEl.createEl("button", {
         cls: "virtual-tree-folder-toggle clickable-icon",
@@ -400,7 +698,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
         } else {
           this.collapsedFolderIds.add(node.id);
         }
-        this.render();
+        this.render("sidebar");
       });
     } else {
       rowEl.createDiv({ cls: "virtual-tree-folder-spacer" });
@@ -408,7 +706,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     this.renderFolderRow(rowEl, node, descendantFilesByFolderId.get(node.id) ?? []);
     if (hasChildren && !this.collapsedFolderIds.has(node.id)) {
       const childrenEl = groupEl.createDiv({ cls: "virtual-tree-folder-children" });
-      for (const childNode of sortFolderNodes(node.children.values())) {
+      for (const childNode of node.sortedChildren) {
         this.renderFolderNode(childrenEl, childNode, descendantFilesByFolderId);
       }
     }
@@ -417,7 +715,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     const rowEl = containerEl.createDiv({ cls: "virtual-tree-folder-item" });
     rowEl.setAttribute("role", "button");
     rowEl.setAttribute("tabindex", "0");
-    if (node.id === this.selectedFolderId) {
+    if (this.selectedSectionId === null && node.id === this.selectedFolderId) {
       rowEl.addClass("is-selected");
     }
     if (node.assignmentValue) {
@@ -425,6 +723,19 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       this.attachFolderDropTarget(rowEl, node);
     }
     const leadingEl = rowEl.createDiv({ cls: "virtual-tree-folder-leading" });
+    if (this.isOrganizingFolderSections && this.plugin.settings.folderSections.length > 0 && node.depth === 1) {
+      const organizeHandleEl = leadingEl.createEl("button", {
+        cls: "clickable-icon virtual-tree-folder-organize-handle",
+        attr: {
+          "aria-label": `Move ${node.name} to another section`,
+          "data-tooltip-position": "top",
+          draggable: "true",
+          type: "button"
+        }
+      });
+      (0, import_obsidian2.setIcon)(organizeHandleEl, "grip-vertical");
+      this.attachFolderOrganizeDrag(organizeHandleEl, node.id);
+    }
     this.renderFolderIcon(leadingEl, node);
     leadingEl.createSpan({ cls: "virtual-tree-folder-label", text: node.name });
     rowEl.createSpan({
@@ -432,14 +743,19 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       text: `${files.length}`
     });
     rowEl.addEventListener("click", () => {
+      if (this.shouldIgnorePointerActivation()) {
+        return;
+      }
+      this.selectedSectionId = null;
       this.selectedFolderId = node.id;
-      this.render();
+      this.render("all", true);
     });
     rowEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
+        this.selectedSectionId = null;
         this.selectedFolderId = node.id;
-        this.render();
+        this.render("all", true);
       }
     });
     rowEl.addEventListener("contextmenu", (event) => {
@@ -476,20 +792,20 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
   }
   attachFolderDropTarget(rowEl, node) {
     rowEl.addEventListener("dragover", (event) => {
-      if (!event.dataTransfer) {
+      const dataTransfer = event.dataTransfer;
+      if (!this.readActiveDraggedFilePayload(dataTransfer) || !dataTransfer) {
         return;
       }
       event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      rowEl.addClass("is-drop-target");
-    });
-    rowEl.addEventListener("dragleave", () => {
-      rowEl.removeClass("is-drop-target");
+      dataTransfer.dropEffect = "move";
+      if (this.activeDropTargetEl !== rowEl) {
+        this.setActiveDropTarget(rowEl);
+      }
     });
     rowEl.addEventListener("drop", (event) => {
       event.preventDefault();
-      rowEl.removeClass("is-drop-target");
-      const payload = readDraggedFilePayload(event.dataTransfer);
+      this.clearActiveDropTarget();
+      const payload = this.readActiveDraggedFilePayload(event.dataTransfer);
       if (!payload) {
         return;
       }
@@ -500,7 +816,9 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       void this.assignFileToCategory(abstractFile, node, payload.sourceAssignmentValue);
     });
   }
-  renderContent(containerEl, selectedNode, files) {
+  renderContent(containerEl, selectedNode, files, initialScrollTop) {
+    this.cleanupVirtualizedList();
+    containerEl.empty();
     const headerEl = containerEl.createDiv({ cls: "virtual-tree-content-header" });
     headerEl.createEl("h3", { text: selectedNode.name });
     headerEl.createSpan({
@@ -510,6 +828,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     const filesEl = containerEl.createDiv({
       cls: this.plugin.settings.noteDisplayMode === "cards" ? "virtual-tree-file-grid" : "virtual-tree-file-list"
     });
+    this.contentScrollEl = filesEl;
     if (this.plugin.settings.noteDisplayMode === "list" && this.plugin.settings.zebraRows) {
       filesEl.addClass("is-zebra");
     }
@@ -518,19 +837,124 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       emptyStateEl.createSpan({ text: "No notes match this folder yet." });
       return;
     }
-    for (const file of files) {
+    if (this.shouldVirtualizeList(files)) {
+      this.renderVirtualizedFileList(filesEl, files, selectedNode.assignmentValue, initialScrollTop);
+      return;
+    }
+    for (const [index, file] of files.entries()) {
       if (this.plugin.settings.noteDisplayMode === "cards") {
         this.renderFileCard(filesEl, file, selectedNode.assignmentValue);
       } else {
-        this.renderFileRow(filesEl, file, selectedNode.assignmentValue);
+        this.renderFileRow(filesEl, file, selectedNode.assignmentValue, index);
       }
     }
+    filesEl.scrollTop = initialScrollTop;
   }
-  renderFileRow(containerEl, file, sourceAssignmentValue) {
+  renderSectionContent(containerEl, section, tree, initialScrollTop) {
+    this.cleanupVirtualizedList();
+    containerEl.empty();
+    const groups = this.buildSectionContentGroups(section, tree);
+    const headerEl = containerEl.createDiv({ cls: "virtual-tree-content-header" });
+    headerEl.createEl("h3", { text: section.title });
+    headerEl.createSpan({
+      cls: "virtual-tree-content-count",
+      text: `${countUniqueFiles(groups)} ${countUniqueFiles(groups) === 1 ? "note" : "notes"}`
+    });
+    const contentEl = containerEl.createDiv({ cls: "virtual-tree-section-content" });
+    this.contentScrollEl = contentEl;
+    if (groups.length === 0) {
+      const emptyStateEl = contentEl.createDiv({ cls: "virtual-tree-empty-state" });
+      emptyStateEl.createSpan({ text: "No notes match this section yet." });
+      return;
+    }
+    groups.forEach((group) => {
+      const groupEl = contentEl.createDiv({ cls: "virtual-tree-section-group" });
+      const groupHeaderEl = groupEl.createDiv({ cls: "virtual-tree-section-group-header" });
+      groupHeaderEl.createSpan({ cls: "virtual-tree-section-group-title", text: group.node.name });
+      groupHeaderEl.createSpan({
+        cls: "virtual-tree-sidebar-section-count",
+        text: `${group.files.length}`
+      });
+      const filesEl = groupEl.createDiv({
+        cls: this.plugin.settings.noteDisplayMode === "cards" ? "virtual-tree-file-grid virtual-tree-section-group-files" : "virtual-tree-file-list virtual-tree-section-group-files"
+      });
+      if (this.plugin.settings.noteDisplayMode === "list" && this.plugin.settings.zebraRows) {
+        filesEl.addClass("is-zebra");
+      }
+      group.files.forEach((file, index) => {
+        if (this.plugin.settings.noteDisplayMode === "cards") {
+          this.renderFileCard(filesEl, file, group.node.assignmentValue);
+        } else {
+          this.renderFileRow(filesEl, file, group.node.assignmentValue, index);
+        }
+      });
+    });
+    contentEl.scrollTop = initialScrollTop;
+  }
+  buildSectionContentGroups(section, tree) {
+    return section.folderNodes.map((node) => ({
+      node,
+      files: tree.descendantFilesByFolderId.get(node.id) ?? []
+    })).filter((group) => group.files.length > 0);
+  }
+  shouldVirtualizeList(files) {
+    return this.plugin.settings.noteDisplayMode === "list" && files.length >= LIST_VIRTUALIZATION_THRESHOLD;
+  }
+  renderVirtualizedFileList(containerEl, files, sourceAssignmentValue, initialScrollTop) {
+    containerEl.addClass("is-virtualized");
+    const spacerEl = containerEl.createDiv({ cls: "virtual-tree-file-list-spacer" });
+    const windowEl = containerEl.createDiv({ cls: "virtual-tree-file-list-window" });
+    const rowHeight = this.plugin.settings.showPath ? LIST_ROW_HEIGHT_WITH_PATH : LIST_ROW_HEIGHT;
+    spacerEl.style.height = `${files.length * rowHeight}px`;
+    containerEl.scrollTop = initialScrollTop;
+    const renderWindow = () => {
+      this.virtualizedListFrameId = null;
+      const viewportHeight = Math.max(containerEl.clientHeight, rowHeight * 8);
+      const scrollTop = containerEl.scrollTop;
+      const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - LIST_VIRTUALIZATION_OVERSCAN);
+      const endIndex = Math.min(
+        files.length,
+        Math.ceil((scrollTop + viewportHeight) / rowHeight) + LIST_VIRTUALIZATION_OVERSCAN
+      );
+      windowEl.empty();
+      windowEl.style.transform = `translateY(${startIndex * rowHeight}px)`;
+      for (let index = startIndex; index < endIndex; index += 1) {
+        this.renderFileRow(windowEl, files[index], sourceAssignmentValue, index);
+      }
+    };
+    const scheduleRenderWindow = () => {
+      if (this.virtualizedListFrameId !== null) {
+        return;
+      }
+      this.virtualizedListFrameId = window.requestAnimationFrame(renderWindow);
+    };
+    containerEl.addEventListener("scroll", scheduleRenderWindow);
+    this.virtualizedListResizeObserver = new ResizeObserver(() => {
+      scheduleRenderWindow();
+    });
+    this.virtualizedListResizeObserver.observe(containerEl);
+    renderWindow();
+    scheduleRenderWindow();
+  }
+  cleanupVirtualizedList() {
+    if (this.virtualizedListResizeObserver) {
+      this.virtualizedListResizeObserver.disconnect();
+      this.virtualizedListResizeObserver = null;
+    }
+    if (this.virtualizedListFrameId !== null) {
+      window.cancelAnimationFrame(this.virtualizedListFrameId);
+      this.virtualizedListFrameId = null;
+    }
+    this.contentScrollEl = null;
+  }
+  renderFileRow(containerEl, file, sourceAssignmentValue, rowIndex) {
     const rowEl = containerEl.createDiv({ cls: "virtual-tree-file-row" });
     rowEl.setAttribute("role", "button");
     rowEl.setAttribute("tabindex", "0");
     rowEl.setAttribute("draggable", "true");
+    if (this.plugin.settings.noteDisplayMode === "list" && this.plugin.settings.zebraRows) {
+      rowEl.addClass(rowIndex % 2 === 0 ? "is-zebra-odd" : "is-zebra-even");
+    }
     const textEl = rowEl.createDiv({ cls: "virtual-tree-file-row-text" });
     textEl.createDiv({ cls: "virtual-tree-file-title", text: file.basename });
     if (this.plugin.settings.showPath) {
@@ -569,18 +993,33 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
         filePath: file.path,
         sourceAssignmentValue
       };
+      this.activeDraggedFilePayload = payload;
+      this.contentEl.addClass("is-dragging-file");
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData(DRAGGED_FILE_PAYLOAD_MIME, JSON.stringify(payload));
       event.dataTransfer.setData(DRAGGED_FILE_PATH_MIME, file.path);
       event.dataTransfer.setData("text/plain", file.path);
       element.addClass("is-dragging");
     });
+    element.addEventListener("drag", (event) => {
+      if (!this.activeDraggedFilePayload) {
+        return;
+      }
+      this.updateDropTargetFromPointer(event.clientX, event.clientY);
+    });
     element.addEventListener("dragend", () => {
       element.removeClass("is-dragging");
+      this.activeDraggedFilePayload = null;
+      this.clearActiveDropTarget();
+      this.contentEl.removeClass("is-dragging-file");
+      this.suppressClickUntil = window.performance.now() + 150;
     });
   }
   attachFileInteractions(rowEl, file) {
     rowEl.addEventListener("click", async () => {
+      if (this.shouldIgnorePointerActivation()) {
+        return;
+      }
       await this.app.workspace.getLeaf(false).openFile(file);
     });
     rowEl.addEventListener("contextmenu", (event) => {
@@ -634,6 +1073,235 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     });
     menu.showAtMouseEvent(event);
   }
+  async toggleOrganizeFolderSections() {
+    if (this.isOrganizingFolderSections) {
+      this.isOrganizingFolderSections = false;
+      this.clearActiveSectionOrganizeTarget();
+      this.render("sidebar");
+      return;
+    }
+    if (this.plugin.settings.folderSections.length === 0) {
+      const nextSection = {
+        id: createFolderSectionId(),
+        title: "Section 1",
+        folderIds: []
+      };
+      await this.plugin.savePluginSettings({
+        ...this.plugin.settings,
+        folderSections: [nextSection]
+      });
+      this.isTreeDirty = true;
+    }
+    this.isOrganizingFolderSections = true;
+    this.render("sidebar");
+  }
+  async addFolderSection() {
+    const nextSection = {
+      id: createFolderSectionId(),
+      title: `Section ${this.plugin.settings.folderSections.length + 1}`,
+      folderIds: []
+    };
+    await this.plugin.savePluginSettings({
+      ...this.plugin.settings,
+      folderSections: [...this.plugin.settings.folderSections, nextSection]
+    });
+    this.isTreeDirty = true;
+    this.render("sidebar");
+  }
+  async deleteFolderSection(sectionId) {
+    const nextSections = this.plugin.settings.folderSections.filter((section) => section.id !== sectionId);
+    await this.plugin.savePluginSettings({
+      ...this.plugin.settings,
+      folderSections: nextSections
+    });
+    this.isTreeDirty = true;
+    if (nextSections.length === 0) {
+      this.isOrganizingFolderSections = false;
+    }
+    this.render("sidebar");
+  }
+  async updateSectionTitleFromInput(sectionId, nextTitle) {
+    const tree = this.getTree();
+    const folderOptions = this.getFolderSectionOptions(tree);
+    const drafts = this.plugin.settings.folderSections.map((section) => {
+      if (section.id !== sectionId) {
+        return {
+          id: section.id,
+          title: section.title,
+          folderIds: [...section.folderIds]
+        };
+      }
+      return {
+        id: section.id,
+        title: nextTitle,
+        folderIds: [...section.folderIds]
+      };
+    });
+    const validated = validateFolderSections(drafts, folderOptions);
+    if (!validated) {
+      this.render("sidebar");
+      return;
+    }
+    await this.plugin.savePluginSettings({
+      ...this.plugin.settings,
+      folderSections: validated
+    });
+    this.isTreeDirty = true;
+    this.render("sidebar");
+  }
+  async moveFolderToSection(folderId, targetSectionId) {
+    const tree = this.getTree();
+    const folderOptions = this.getFolderSectionOptions(tree);
+    let drafts = this.plugin.settings.folderSections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      folderIds: section.folderIds.filter((existingFolderId) => existingFolderId !== folderId)
+    }));
+    if (targetSectionId) {
+      drafts = drafts.map(
+        (section) => section.id === targetSectionId ? { ...section, folderIds: [...section.folderIds, folderId] } : section
+      );
+    }
+    const validated = validateFolderSections(drafts, folderOptions);
+    if (!validated) {
+      return;
+    }
+    await this.plugin.savePluginSettings({
+      ...this.plugin.settings,
+      folderSections: validated
+    });
+    this.isTreeDirty = true;
+    this.render("sidebar");
+  }
+  async reorderFolderSections(draggedSectionId, targetSectionId) {
+    if (draggedSectionId === targetSectionId) {
+      return;
+    }
+    const ordered = [...this.plugin.settings.folderSections];
+    const fromIndex = ordered.findIndex((section) => section.id === draggedSectionId);
+    const toIndex = ordered.findIndex((section) => section.id === targetSectionId);
+    if (fromIndex < 0 || toIndex < 0) {
+      return;
+    }
+    const [removed] = ordered.splice(fromIndex, 1);
+    ordered.splice(toIndex, 0, removed);
+    const tree = this.getTree();
+    const drafts = ordered.map((section) => ({
+      id: section.id,
+      title: section.title,
+      folderIds: [...section.folderIds]
+    }));
+    const validated = validateFolderSections(drafts, this.getFolderSectionOptions(tree));
+    if (!validated) {
+      return;
+    }
+    await this.plugin.savePluginSettings({
+      ...this.plugin.settings,
+      folderSections: validated
+    });
+    this.isTreeDirty = true;
+    this.render("sidebar");
+  }
+  getFolderSectionOptions(tree) {
+    return tree.root.sortedChildren.map((node) => ({
+      id: node.id,
+      name: node.name
+    }));
+  }
+  getSidebarFolderSections(tree) {
+    return buildSidebarFolderSections(tree.root.sortedChildren, this.plugin.settings.folderSections);
+  }
+  attachSectionOrganizeDropTarget(sectionEl, section) {
+    const onDragOver = (event) => {
+      const dataTransfer = event.dataTransfer;
+      if (!dataTransfer) {
+        return;
+      }
+      const isFolderDrag = dataTransfer.types.includes(DRAGGED_FOLDER_ID_MIME);
+      const isSectionDrag = dataTransfer.types.includes(DRAGGED_SECTION_ID_MIME);
+      if (isFolderDrag) {
+        event.preventDefault();
+        dataTransfer.dropEffect = "move";
+        this.setActiveSectionOrganizeTarget(sectionEl);
+        return;
+      }
+      if (isSectionDrag && !section.isUngrouped) {
+        event.preventDefault();
+        dataTransfer.dropEffect = "move";
+        this.setActiveSectionOrganizeTarget(sectionEl);
+      }
+    };
+    const onDrop = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.clearActiveSectionOrganizeTarget();
+      const dataTransfer = event.dataTransfer;
+      if (!dataTransfer) {
+        return;
+      }
+      const folderId = dataTransfer.getData(DRAGGED_FOLDER_ID_MIME);
+      if (folderId.length > 0) {
+        const targetId = section.isUngrouped ? null : section.id;
+        void this.moveFolderToSection(folderId, targetId);
+        return;
+      }
+      const draggedSectionId = dataTransfer.getData(DRAGGED_SECTION_ID_MIME);
+      if (draggedSectionId.length > 0 && !section.isUngrouped) {
+        void this.reorderFolderSections(draggedSectionId, section.id);
+      }
+    };
+    sectionEl.addEventListener("dragover", onDragOver, true);
+    sectionEl.addEventListener("drop", onDrop, true);
+  }
+  attachFolderOrganizeDrag(handleEl, folderId) {
+    handleEl.setAttribute("draggable", "true");
+    handleEl.addEventListener("dragstart", (event) => {
+      const dataTransfer = event.dataTransfer;
+      if (!dataTransfer) {
+        return;
+      }
+      dataTransfer.effectAllowed = "move";
+      dataTransfer.setData(DRAGGED_FOLDER_ID_MIME, folderId);
+      this.contentEl.addClass("is-organizing-folder-drag");
+      event.stopPropagation();
+    });
+    handleEl.addEventListener("dragend", () => {
+      this.contentEl.removeClass("is-organizing-folder-drag");
+      this.clearActiveSectionOrganizeTarget();
+    });
+  }
+  attachSectionReorderDrag(handleEl, sectionId) {
+    handleEl.setAttribute("draggable", "true");
+    handleEl.addEventListener("dragstart", (event) => {
+      const dataTransfer = event.dataTransfer;
+      if (!dataTransfer) {
+        return;
+      }
+      dataTransfer.effectAllowed = "move";
+      dataTransfer.setData(DRAGGED_SECTION_ID_MIME, sectionId);
+      this.contentEl.addClass("is-organizing-section-drag");
+      event.stopPropagation();
+    });
+    handleEl.addEventListener("dragend", () => {
+      this.contentEl.removeClass("is-organizing-section-drag");
+      this.clearActiveSectionOrganizeTarget();
+    });
+  }
+  setActiveSectionOrganizeTarget(nextTarget) {
+    if (this.activeSectionOrganizeTargetEl === nextTarget) {
+      return;
+    }
+    this.clearActiveSectionOrganizeTarget();
+    this.activeSectionOrganizeTargetEl = nextTarget;
+    nextTarget.addClass("is-section-organize-target");
+  }
+  clearActiveSectionOrganizeTarget() {
+    if (!this.activeSectionOrganizeTargetEl) {
+      return;
+    }
+    this.activeSectionOrganizeTargetEl.removeClass("is-section-organize-target");
+    this.activeSectionOrganizeTargetEl = null;
+  }
   async renameFileWithObsidianCommand(file) {
     const targetLeaf = this.app.workspace.getMostRecentLeaf() ?? this.app.workspace.getLeaf(false);
     await targetLeaf.openFile(file);
@@ -653,7 +1321,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     });
     this.selectedFolderId = node.id;
     this.isTreeDirty = true;
-    this.requestRefresh();
+    this.render("all", true);
   }
   resolveCategoryFile(node) {
     const assignmentValue = node.assignmentValue;
@@ -685,6 +1353,39 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     });
     this.isTreeDirty = true;
     this.requestRefresh();
+  }
+  shouldIgnorePointerActivation() {
+    return window.performance.now() < this.suppressClickUntil;
+  }
+  setActiveDropTarget(nextTarget) {
+    if (this.activeDropTargetEl === nextTarget) {
+      return;
+    }
+    this.clearActiveDropTarget();
+    this.activeDropTargetEl = nextTarget;
+    nextTarget.addClass("is-drop-target");
+  }
+  clearActiveDropTarget() {
+    if (!this.activeDropTargetEl) {
+      return;
+    }
+    this.activeDropTargetEl.removeClass("is-drop-target");
+    this.activeDropTargetEl = null;
+  }
+  readActiveDraggedFilePayload(dataTransfer) {
+    return this.activeDraggedFilePayload ?? readDraggedFilePayload(dataTransfer);
+  }
+  updateDropTargetFromPointer(clientX, clientY) {
+    if (clientX <= 0 && clientY <= 0) {
+      return;
+    }
+    const hoveredElement = this.contentEl.ownerDocument.elementFromPoint(clientX, clientY);
+    const dropTarget = hoveredElement instanceof HTMLElement ? hoveredElement.closest(".virtual-tree-folder-item.is-droppable") : null;
+    if (!(dropTarget instanceof HTMLElement) || !this.contentEl.contains(dropTarget)) {
+      this.clearActiveDropTarget();
+      return;
+    }
+    this.setActiveDropTarget(dropTarget);
   }
 };
 var EditCategoryTitleModal = class extends import_obsidian2.Modal {
@@ -772,6 +1473,83 @@ function normalizeFrontmatterCategoryValues(value) {
   }
   return value.filter((entry) => typeof entry === "string");
 }
+function buildSidebarFolderSections(topLevelNodes, folderSections) {
+  if (folderSections.length === 0) {
+    return [];
+  }
+  const nodesById = new Map(topLevelNodes.map((node) => [node.id, node]));
+  const claimedFolderIds = /* @__PURE__ */ new Set();
+  const sections = [];
+  folderSections.forEach((section) => {
+    const folderNodes = [];
+    section.folderIds.forEach((folderId) => {
+      if (claimedFolderIds.has(folderId)) {
+        return;
+      }
+      const node = nodesById.get(folderId);
+      if (!node) {
+        return;
+      }
+      claimedFolderIds.add(folderId);
+      folderNodes.push(node);
+    });
+    sections.push({
+      id: section.id,
+      title: section.title,
+      folderNodes,
+      isUngrouped: false
+    });
+  });
+  const ungroupedNodes = topLevelNodes.filter((node) => !claimedFolderIds.has(node.id));
+  if (ungroupedNodes.length > 0) {
+    sections.push({
+      id: UNGROUPED_SECTION_ID,
+      title: "Ungrouped",
+      folderNodes: ungroupedNodes,
+      isUngrouped: true
+    });
+  }
+  return sections;
+}
+function validateFolderSections(sections, folderOptions) {
+  const availableFolderIds = new Set(folderOptions.map((folderOption) => folderOption.id));
+  const usedTitles = /* @__PURE__ */ new Set();
+  const claimedFolderIds = /* @__PURE__ */ new Set();
+  try {
+    return sections.map((section) => {
+      const title = section.title.trim();
+      if (title.length === 0) {
+        throw new Error("Section names cannot be empty.");
+      }
+      const normalizedTitle = title.toLocaleLowerCase();
+      if (usedTitles.has(normalizedTitle)) {
+        throw new Error("Section names must be unique.");
+      }
+      usedTitles.add(normalizedTitle);
+      const folderIds = section.folderIds.filter((folderId) => {
+        if (!availableFolderIds.has(folderId) || claimedFolderIds.has(folderId)) {
+          return false;
+        }
+        claimedFolderIds.add(folderId);
+        return true;
+      });
+      return {
+        id: section.id,
+        title,
+        folderIds
+      };
+    });
+  } catch (error) {
+    new import_obsidian2.Notice(error instanceof Error ? error.message : "Unable to save folder sections.");
+    return null;
+  }
+}
+function countUniqueFiles(groups) {
+  return new Set(groups.flatMap((group) => group.files.map((file) => file.path))).size;
+}
+function createFolderSectionId() {
+  return `folder-section-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 function readDraggedFilePayload(dataTransfer) {
   if (!dataTransfer) {
     return null;
@@ -801,9 +1579,6 @@ function isDraggedFilePayload(value) {
   }
   const candidate = value;
   return typeof candidate.filePath === "string" && (typeof candidate.sourceAssignmentValue === "string" || candidate.sourceAssignmentValue === null);
-}
-function sortFolderNodes(nodes) {
-  return [...nodes].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 // main.ts
@@ -838,18 +1613,19 @@ var VirtualTreePlugin = class extends import_obsidian3.Plugin {
    * Persists plugin settings and refreshes all open views.
    */
   async savePluginSettings(nextSettings) {
+    const shouldRebuildTree = shouldRebuildTreeForSettingsChange(this.settings, nextSettings);
     this.settings = nextSettings;
     await this.saveData(nextSettings);
-    this.refreshViews();
+    this.refreshViews(shouldRebuildTree);
   }
   /**
    * Refreshes every currently open virtual tree view.
    */
-  refreshViews() {
+  refreshViews(treeDirty = true) {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_VIRTUAL_TREE)) {
       const view = leaf.view;
       if (view instanceof VirtualTreeView) {
-        view.requestRefresh();
+        view.requestRefresh(treeDirty);
       }
     }
   }
@@ -857,22 +1633,63 @@ var VirtualTreePlugin = class extends import_obsidian3.Plugin {
     const loadedSettings = await this.loadData();
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...isVirtualTreeSettings(loadedSettings) ? loadedSettings : {}
+      ...readVirtualTreeSettings(loadedSettings)
     };
   }
   async activateView() {
-    const existingLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_VIRTUAL_TREE)[0];
-    const leaf = existingLeaf ?? this.app.workspace.getLeftLeaf(true);
+    const leaf = await this.ensureVirtualTreeLeaf();
     if (!leaf) {
       return;
     }
     await leaf.setViewState({ type: VIEW_TYPE_VIRTUAL_TREE, active: true });
+    this.app.workspace.setActiveLeaf(leaf, { focus: false });
     this.app.workspace.revealLeaf(leaf);
   }
+  async ensureVirtualTreeLeaf() {
+    const existingLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_VIRTUAL_TREE)[0];
+    if (existingLeaf) {
+      return existingLeaf;
+    }
+    const leaf = this.app.workspace.getLeftLeaf(true);
+    if (!leaf) {
+      return null;
+    }
+    await leaf.setViewState({ type: VIEW_TYPE_VIRTUAL_TREE, active: false });
+    return leaf;
+  }
 };
-function isVirtualTreeSettings(value) {
+function readVirtualTreeSettings(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const candidate = value;
+  const categoryNoteFilenamePrefix = normalizeCategoryNoteFilenamePrefix(candidate.categoryNoteFilenamePrefix);
+  return {
+    ...typeof candidate.frontmatterKey === "string" ? { frontmatterKey: candidate.frontmatterKey } : {},
+    ...typeof candidate.treatSlashesAsHierarchy === "boolean" ? { treatSlashesAsHierarchy: candidate.treatSlashesAsHierarchy } : {},
+    ...typeof candidate.showUncategorized === "boolean" ? { showUncategorized: candidate.showUncategorized } : {},
+    ...typeof candidate.showUncategorizedFolder === "boolean" ? { showUncategorizedFolder: candidate.showUncategorizedFolder } : {},
+    ...typeof candidate.showUnassignedCategoryNotes === "boolean" ? { showUnassignedCategoryNotes: candidate.showUnassignedCategoryNotes } : {},
+    ...categoryNoteFilenamePrefix !== null ? { categoryNoteFilenamePrefix } : {},
+    ...candidate.noteDisplayMode === "list" || candidate.noteDisplayMode === "cards" ? { noteDisplayMode: candidate.noteDisplayMode } : {},
+    ...typeof candidate.showPath === "boolean" ? { showPath: candidate.showPath } : {},
+    ...typeof candidate.zebraRows === "boolean" ? { zebraRows: candidate.zebraRows } : {},
+    ...Array.isArray(candidate.folderSections) ? { folderSections: candidate.folderSections.filter(isFolderSection) } : {}
+  };
+}
+function normalizeCategoryNoteFilenamePrefix(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return value === "^category - " ? "category - " : value;
+}
+function isFolderSection(value) {
   if (!value || typeof value !== "object") {
     return false;
   }
-  return true;
+  const candidate = value;
+  return typeof candidate.id === "string" && typeof candidate.title === "string" && Array.isArray(candidate.folderIds) && candidate.folderIds.every((folderId) => typeof folderId === "string");
+}
+function shouldRebuildTreeForSettingsChange(currentSettings, nextSettings) {
+  return currentSettings.frontmatterKey !== nextSettings.frontmatterKey || currentSettings.treatSlashesAsHierarchy !== nextSettings.treatSlashesAsHierarchy || currentSettings.showUncategorized !== nextSettings.showUncategorized || currentSettings.showUncategorizedFolder !== nextSettings.showUncategorizedFolder || currentSettings.showUnassignedCategoryNotes !== nextSettings.showUnassignedCategoryNotes || currentSettings.categoryNoteFilenamePrefix !== nextSettings.categoryNoteFilenamePrefix;
 }

@@ -8,6 +8,7 @@ export {
   type CategoryFolderNode,
   type CategoryPath,
   type CategoryTree,
+  type FolderSection,
   type VirtualTreeSettings,
 } from "./types";
 export { VIEW_TYPE_VIRTUAL_TREE, VirtualTreeView } from "./view";

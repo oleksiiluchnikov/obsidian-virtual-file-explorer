@@ -6,6 +6,15 @@ import { TFile } from "obsidian";
 export type NoteDisplayMode = "list" | "cards";
 
 /**
+ * A UI-only sidebar section that groups top-level folders.
+ */
+export interface FolderSection {
+  readonly id: string;
+  readonly title: string;
+  readonly folderIds: readonly string[];
+}
+
+/**
  * Settings that control the virtual folder explorer.
  */
 export interface VirtualTreeSettings {
@@ -13,9 +22,14 @@ export interface VirtualTreeSettings {
   readonly treatSlashesAsHierarchy: boolean;
   readonly showUncategorized: boolean;
   readonly showUncategorizedFolder: boolean;
+  /** When enabled, notes whose filename starts with the category note prefix create folders even if no note lists them yet. */
+  readonly showUnassignedCategoryNotes: boolean;
+  /** Basename prefix for category definition notes (e.g. `category - `). */
+  readonly categoryNoteFilenamePrefix: string;
   readonly noteDisplayMode: NoteDisplayMode;
   readonly showPath: boolean;
   readonly zebraRows: boolean;
+  readonly folderSections: readonly FolderSection[];
 }
 
 /**
@@ -36,6 +50,7 @@ export interface CategoryFolderNode {
   readonly name: string;
   readonly depth: number;
   readonly children: Map<string, CategoryFolderNode>;
+  sortedChildren: readonly CategoryFolderNode[];
   readonly directFiles: TFile[];
   assignmentValue: string | null;
   icon: string | null;
@@ -75,7 +90,10 @@ export const DEFAULT_SETTINGS: VirtualTreeSettings = {
   treatSlashesAsHierarchy: true,
   showUncategorized: true,
   showUncategorizedFolder: false,
+  showUnassignedCategoryNotes: true,
+  categoryNoteFilenamePrefix: "category - ",
   noteDisplayMode: "list",
   showPath: false,
   zebraRows: true,
+  folderSections: [],
 };
