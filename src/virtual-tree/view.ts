@@ -4,8 +4,10 @@ import {
   Menu,
   Modal,
   Notice,
+  Platform,
   TAbstractFile,
   TFile,
+  normalizePath,
   WorkspaceLeaf,
   setIcon,
 } from "obsidian";
@@ -80,6 +82,7 @@ interface SectionContentGroup {
 }
 
 type RenderScope = "all" | "sidebar" | "content";
+type MobileActivePane = "folders" | "notes";
 
 interface AppWithCommands extends App {
   readonly commands: {
@@ -119,6 +122,7 @@ export class VirtualTreeView extends ItemView {
   private pendingTreeDirty = false;
   private autoRefreshSuppression: AutoRefreshSuppression | null = null;
   private pendingContentOrderOverride: PendingContentOrderOverride | null = null;
+  private mobileActivePane: MobileActivePane = "folders";
 
   public constructor(leaf: WorkspaceLeaf, plugin: VirtualTreePlugin) {
     super(leaf);
@@ -230,6 +234,7 @@ export class VirtualTreeView extends ItemView {
     this.selectedSectionId = selectedSection?.id ?? null;
 
     this.ensureLayout();
+    this.syncMobilePaneLayout();
 
     if (resetContentScroll) {
       this.pendingContentOrderOverride = null;
@@ -282,6 +287,7 @@ export class VirtualTreeView extends ItemView {
     const layoutEl = this.contentEl.createDiv({ cls: "virtual-tree-layout" });
     this.sidebarPaneEl = layoutEl.createDiv({ cls: "virtual-tree-sidebar" });
     this.contentPaneEl = layoutEl.createDiv({ cls: "virtual-tree-content" });
+    this.syncMobilePaneLayout();
   }
 
   private getTree(): CategoryTree {
@@ -304,6 +310,7 @@ export class VirtualTreeView extends ItemView {
 
     const headerEl = containerEl.createDiv({ cls: "virtual-tree-sidebar-header" });
     headerEl.createEl("h3", { text: "Folders" });
+    this.renderMobilePaneSwitch(headerEl, "folders");
     const actionsEl = headerEl.createDiv({ cls: "virtual-tree-sidebar-actions" });
     if (this.isOrganizingFolderSections) {
       const addSectionButtonEl = actionsEl.createEl("button", {
@@ -464,6 +471,7 @@ export class VirtualTreeView extends ItemView {
           this.selectedNotePaths.clear();
           this.selectionAnchorFilePath = null;
           this.selectedSectionId = section.id;
+          this.showMobileNotesPane();
           this.render("all", true);
         });
         sectionHeaderEl.addEventListener("keydown", (event) => {
@@ -472,6 +480,7 @@ export class VirtualTreeView extends ItemView {
             this.selectedNotePaths.clear();
             this.selectionAnchorFilePath = null;
             this.selectedSectionId = section.id;
+            this.showMobileNotesPane();
             this.render("all", true);
           }
         });
@@ -600,6 +609,7 @@ export class VirtualTreeView extends ItemView {
       this.selectionAnchorFilePath = null;
       this.selectedSectionId = null;
       this.selectedFolderId = node.id;
+      this.showMobileNotesPane();
       this.render("all", true);
     });
 
@@ -610,6 +620,7 @@ export class VirtualTreeView extends ItemView {
         this.selectionAnchorFilePath = null;
         this.selectedSectionId = null;
         this.selectedFolderId = node.id;
+        this.showMobileNotesPane();
         this.render("all", true);
       }
     });
@@ -918,6 +929,8 @@ export class VirtualTreeView extends ItemView {
       textEl.createDiv({ cls: "virtual-tree-file-path", text: file.path });
     }
 
+    this.renderFileActionButton(rowEl, file);
+
     this.attachFileInteractions(rowEl, file);
     this.attachFileDragSource(rowEl, file, sourceAssignmentValue);
   }
@@ -947,8 +960,30 @@ export class VirtualTreeView extends ItemView {
       cardEl.createDiv({ cls: "virtual-tree-file-path", text: file.path });
     }
 
+    this.renderFileActionButton(cardEl, file);
+
     this.attachFileInteractions(cardEl, file);
     this.attachFileDragSource(cardEl, file, sourceAssignmentValue);
+  }
+
+  private renderFileActionButton(containerEl: HTMLElement, file: TFile): void {
+    if (!Platform.isMobile) {
+      return;
+    }
+
+    const actionButtonEl = containerEl.createEl("button", {
+      cls: "clickable-icon virtual-tree-file-action-button",
+      attr: {
+        "aria-label": `Open note actions for ${file.basename}`,
+        type: "button",
+      },
+    });
+    setIcon(actionButtonEl, "ellipsis");
+    actionButtonEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openFileMenuAtElement(actionButtonEl, file);
+    });
   }
 
   private attachFileDragSource(
@@ -1377,12 +1412,28 @@ export class VirtualTreeView extends ItemView {
   private renderContentHeader(containerEl: HTMLElement, title: string, noteCountLabel: string): void {
     const headerEl = containerEl.createDiv({ cls: "virtual-tree-content-header" });
     headerEl.createEl("h3", { text: title });
+    this.renderMobilePaneSwitch(headerEl, "notes");
 
     const headerMetaEl = headerEl.createDiv({ cls: "virtual-tree-content-header-meta" });
     headerMetaEl.createSpan({
       cls: "virtual-tree-content-count",
       text: noteCountLabel,
     });
+
+    const currentCategoryNode = this.getCurrentCategoryNode();
+    if (currentCategoryNode) {
+      const createNoteButtonEl = headerMetaEl.createEl("button", {
+        cls: "mod-cta virtual-tree-content-create-note",
+        attr: {
+          "aria-label": `Create a note in ${currentCategoryNode.name}`,
+          type: "button",
+        },
+        text: "Create note",
+      });
+      createNoteButtonEl.addEventListener("click", () => {
+        void this.createNoteForCurrentCategory(currentCategoryNode);
+      });
+    }
 
     const selectionControlsEl = headerMetaEl.createDiv({ cls: "virtual-tree-content-selection-controls" });
     this.renderSelectionControls(selectionControlsEl);
@@ -1483,7 +1534,70 @@ export class VirtualTreeView extends ItemView {
     return stripCaseInsensitivePrefix(file.basename, `${normalizedPrefix} - `);
   }
 
+  private getCurrentCategoryNode(): CategoryFolderNode | null {
+    if (this.selectedSectionId !== null) {
+      return null;
+    }
+
+    const node = this.getTree().folderLookup.get(this.selectedFolderId) ?? null;
+    if (!node || !node.assignmentValue || node.id === ROOT_FOLDER_ID || node.id === UNCATEGORIZED_FOLDER_ID) {
+      return null;
+    }
+
+    return node;
+  }
+
+  private async createNoteForCurrentCategory(node: CategoryFolderNode): Promise<void> {
+    const assignmentValue = this.getAssignmentValueForNode(node);
+    if (!assignmentValue) {
+      new Notice(`Could not resolve the category link for ${node.name}.`);
+      return;
+    }
+
+    const activeFile = this.app.workspace.getActiveFile();
+    const parentFolder = this.app.fileManager.getNewFileParent(activeFile?.path ?? "", `${node.name} - untitled.md`);
+    const baseName = `${node.name} - untitled`;
+    const filePath = this.getAvailableMarkdownPath(parentFolder.path, baseName);
+    const file = await this.app.vault.create(filePath, this.buildNewCategoryNoteContent(assignmentValue, baseName));
+    this.autoRefreshSuppression = null;
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  private getAvailableMarkdownPath(parentPath: string, baseName: string): string {
+    const normalizedParentPath = parentPath === "/" ? "" : parentPath;
+    const sanitizedBaseName = sanitizeFileBasename(baseName);
+    let attempt = 1;
+
+    while (true) {
+      const candidateBaseName = attempt === 1 ? sanitizedBaseName : `${sanitizedBaseName} ${attempt}`;
+      const candidatePath = normalizePath(
+        normalizedParentPath.length > 0 ? `${normalizedParentPath}/${candidateBaseName}.md` : `${candidateBaseName}.md`,
+      );
+      if (!this.app.vault.getAbstractFileByPath(candidatePath)) {
+        return candidatePath;
+      }
+
+      attempt += 1;
+    }
+  }
+
+  private buildNewCategoryNoteContent(assignmentValue: string, title: string): string {
+    return `---\n${this.plugin.settings.frontmatterKey}:\n  - "${escapeYamlDoubleQuotedString(assignmentValue)}"\ntitle: "${escapeYamlDoubleQuotedString(title)}"\n---\n\n`;
+  }
+
   private openFileMenu(event: MouseEvent, file: TFile): void {
+    this.createFileMenu(file).showAtMouseEvent(event);
+  }
+
+  private openFileMenuAtElement(element: HTMLElement, file: TFile): void {
+    const rect = element.getBoundingClientRect();
+    this.createFileMenu(file).showAtPosition({
+      x: rect.right,
+      y: rect.bottom,
+    }, element.ownerDocument);
+  }
+
+  private createFileMenu(file: TFile): Menu {
     const categoryActionFiles = this.getFilesForCategoryAction(file);
     const menu = new Menu();
     menu.addItem((item) => {
@@ -1509,7 +1623,7 @@ export class VirtualTreeView extends ItemView {
           this.openAssignCategoriesModal(categoryActionFiles);
         });
     });
-    menu.showAtMouseEvent(event);
+    return menu;
   }
 
   private openFolderMenu(event: MouseEvent, node: CategoryFolderNode): void {
@@ -1750,6 +1864,62 @@ export class VirtualTreeView extends ItemView {
 
   private preserveSidebarScrollForNextRender(): void {
     this.pendingSidebarScrollTop = this.sidebarPaneEl?.scrollTop ?? null;
+  }
+
+  private isMobilePaneLayout(): boolean {
+    return window.matchMedia("(max-width: 700px)").matches;
+  }
+
+  private syncMobilePaneLayout(): void {
+    const isMobileLayout = this.isMobilePaneLayout();
+    this.contentEl.toggleClass("is-mobile-pane-layout", isMobileLayout);
+    this.contentEl.toggleClass("is-mobile-show-folders", isMobileLayout && this.mobileActivePane === "folders");
+    this.contentEl.toggleClass("is-mobile-show-notes", isMobileLayout && this.mobileActivePane === "notes");
+  }
+
+  private setMobileActivePane(nextPane: MobileActivePane): void {
+    if (this.mobileActivePane === nextPane) {
+      return;
+    }
+
+    this.mobileActivePane = nextPane;
+    this.syncMobilePaneLayout();
+  }
+
+  private showMobileNotesPane(): void {
+    if (!this.isMobilePaneLayout()) {
+      return;
+    }
+
+    this.setMobileActivePane("notes");
+  }
+
+  private renderMobilePaneSwitch(containerEl: HTMLElement, activePane: MobileActivePane): void {
+    const switchEl = containerEl.createDiv({ cls: "virtual-tree-mobile-pane-switch" });
+    this.createMobilePaneSwitchButton(switchEl, "folders", activePane, "Folders");
+    this.createMobilePaneSwitchButton(switchEl, "notes", activePane, "Notes");
+  }
+
+  private createMobilePaneSwitchButton(
+    containerEl: HTMLElement,
+    pane: MobileActivePane,
+    activePane: MobileActivePane,
+    label: string,
+  ): void {
+    const buttonEl = containerEl.createEl("button", {
+      cls: pane === activePane
+        ? "virtual-tree-mobile-pane-button is-active"
+        : "virtual-tree-mobile-pane-button",
+      attr: {
+        "aria-label": `Show ${label.toLocaleLowerCase()} pane`,
+        type: "button",
+      },
+      text: label,
+    });
+    buttonEl.addEventListener("click", () => {
+      this.setMobileActivePane(pane);
+      this.render("all");
+    });
   }
 
   private getCurrentViewKey(): string {
@@ -3133,6 +3303,20 @@ function cleanupCategoryLabel(label: string): string {
 
 function uniqueFilePaths(files: readonly TFile[]): readonly string[] {
   return [...new Set(files.map((file) => file.path))];
+}
+
+function sanitizeFileBasename(value: string): string {
+  const sanitizedValue = value
+    .replace(/[\\/:*?"<>|#^[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitizedValue.length > 0 ? sanitizedValue : "untitled";
+}
+
+function escapeYamlDoubleQuotedString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
 }
 
 function clampIndex(index: number, length: number): number {

@@ -498,6 +498,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     this.pendingTreeDirty = false;
     this.autoRefreshSuppression = null;
     this.pendingContentOrderOverride = null;
+    this.mobileActivePane = "folders";
     this.plugin = plugin;
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       if (this.shouldIgnoreAutoRefresh(file.path)) {
@@ -587,6 +588,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     this.selectedFolderId = selectedNode.id;
     this.selectedSectionId = selectedSection?.id ?? null;
     this.ensureLayout();
+    this.syncMobilePaneLayout();
     if (resetContentScroll) {
       this.pendingContentOrderOverride = null;
     }
@@ -630,6 +632,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     const layoutEl = this.contentEl.createDiv({ cls: "virtual-tree-layout" });
     this.sidebarPaneEl = layoutEl.createDiv({ cls: "virtual-tree-sidebar" });
     this.contentPaneEl = layoutEl.createDiv({ cls: "virtual-tree-content" });
+    this.syncMobilePaneLayout();
   }
   getTree() {
     if (this.cachedTree && !this.isTreeDirty) {
@@ -647,6 +650,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     containerEl.empty();
     const headerEl = containerEl.createDiv({ cls: "virtual-tree-sidebar-header" });
     headerEl.createEl("h3", { text: "Folders" });
+    this.renderMobilePaneSwitch(headerEl, "folders");
     const actionsEl = headerEl.createDiv({ cls: "virtual-tree-sidebar-actions" });
     if (this.isOrganizingFolderSections) {
       const addSectionButtonEl = actionsEl.createEl("button", {
@@ -783,6 +787,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
           this.selectedNotePaths.clear();
           this.selectionAnchorFilePath = null;
           this.selectedSectionId = section.id;
+          this.showMobileNotesPane();
           this.render("all", true);
         });
         sectionHeaderEl.addEventListener("keydown", (event) => {
@@ -791,6 +796,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
             this.selectedNotePaths.clear();
             this.selectionAnchorFilePath = null;
             this.selectedSectionId = section.id;
+            this.showMobileNotesPane();
             this.render("all", true);
           }
         });
@@ -894,6 +900,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
       this.selectionAnchorFilePath = null;
       this.selectedSectionId = null;
       this.selectedFolderId = node.id;
+      this.showMobileNotesPane();
       this.render("all", true);
     });
     rowEl.addEventListener("keydown", (event) => {
@@ -903,6 +910,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
         this.selectionAnchorFilePath = null;
         this.selectedSectionId = null;
         this.selectedFolderId = node.id;
+        this.showMobileNotesPane();
         this.render("all", true);
       }
     });
@@ -1128,6 +1136,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     if (this.plugin.settings.showPath) {
       textEl.createDiv({ cls: "virtual-tree-file-path", text: file.path });
     }
+    this.renderFileActionButton(rowEl, file);
     this.attachFileInteractions(rowEl, file);
     this.attachFileDragSource(rowEl, file, sourceAssignmentValue);
   }
@@ -1147,8 +1156,27 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     if (this.plugin.settings.showPath) {
       cardEl.createDiv({ cls: "virtual-tree-file-path", text: file.path });
     }
+    this.renderFileActionButton(cardEl, file);
     this.attachFileInteractions(cardEl, file);
     this.attachFileDragSource(cardEl, file, sourceAssignmentValue);
+  }
+  renderFileActionButton(containerEl, file) {
+    if (!import_obsidian2.Platform.isMobile) {
+      return;
+    }
+    const actionButtonEl = containerEl.createEl("button", {
+      cls: "clickable-icon virtual-tree-file-action-button",
+      attr: {
+        "aria-label": `Open note actions for ${file.basename}`,
+        type: "button"
+      }
+    });
+    (0, import_obsidian2.setIcon)(actionButtonEl, "ellipsis");
+    actionButtonEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openFileMenuAtElement(actionButtonEl, file);
+    });
   }
   attachFileDragSource(element, file, sourceAssignmentValue) {
     element.addEventListener("dragstart", (event) => {
@@ -1487,11 +1515,26 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
   renderContentHeader(containerEl, title, noteCountLabel) {
     const headerEl = containerEl.createDiv({ cls: "virtual-tree-content-header" });
     headerEl.createEl("h3", { text: title });
+    this.renderMobilePaneSwitch(headerEl, "notes");
     const headerMetaEl = headerEl.createDiv({ cls: "virtual-tree-content-header-meta" });
     headerMetaEl.createSpan({
       cls: "virtual-tree-content-count",
       text: noteCountLabel
     });
+    const currentCategoryNode = this.getCurrentCategoryNode();
+    if (currentCategoryNode) {
+      const createNoteButtonEl = headerMetaEl.createEl("button", {
+        cls: "mod-cta virtual-tree-content-create-note",
+        attr: {
+          "aria-label": `Create a note in ${currentCategoryNode.name}`,
+          type: "button"
+        },
+        text: "Create note"
+      });
+      createNoteButtonEl.addEventListener("click", () => {
+        void this.createNoteForCurrentCategory(currentCategoryNode);
+      });
+    }
     const selectionControlsEl = headerMetaEl.createDiv({ cls: "virtual-tree-content-selection-controls" });
     this.renderSelectionControls(selectionControlsEl);
     const sortControlsEl = headerMetaEl.createDiv({ cls: "virtual-tree-content-sort-controls" });
@@ -1579,7 +1622,65 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
     }
     return stripCaseInsensitivePrefix(file.basename, `${normalizedPrefix} - `);
   }
+  getCurrentCategoryNode() {
+    if (this.selectedSectionId !== null) {
+      return null;
+    }
+    const node = this.getTree().folderLookup.get(this.selectedFolderId) ?? null;
+    if (!node || !node.assignmentValue || node.id === ROOT_FOLDER_ID || node.id === UNCATEGORIZED_FOLDER_ID) {
+      return null;
+    }
+    return node;
+  }
+  async createNoteForCurrentCategory(node) {
+    const assignmentValue = this.getAssignmentValueForNode(node);
+    if (!assignmentValue) {
+      new import_obsidian2.Notice(`Could not resolve the category link for ${node.name}.`);
+      return;
+    }
+    const activeFile = this.app.workspace.getActiveFile();
+    const parentFolder = this.app.fileManager.getNewFileParent(activeFile?.path ?? "", `${node.name} - untitled.md`);
+    const baseName = `${node.name} - untitled`;
+    const filePath = this.getAvailableMarkdownPath(parentFolder.path, baseName);
+    const file = await this.app.vault.create(filePath, this.buildNewCategoryNoteContent(assignmentValue, baseName));
+    this.autoRefreshSuppression = null;
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+  getAvailableMarkdownPath(parentPath, baseName) {
+    const normalizedParentPath = parentPath === "/" ? "" : parentPath;
+    const sanitizedBaseName = sanitizeFileBasename(baseName);
+    let attempt = 1;
+    while (true) {
+      const candidateBaseName = attempt === 1 ? sanitizedBaseName : `${sanitizedBaseName} ${attempt}`;
+      const candidatePath = (0, import_obsidian2.normalizePath)(
+        normalizedParentPath.length > 0 ? `${normalizedParentPath}/${candidateBaseName}.md` : `${candidateBaseName}.md`
+      );
+      if (!this.app.vault.getAbstractFileByPath(candidatePath)) {
+        return candidatePath;
+      }
+      attempt += 1;
+    }
+  }
+  buildNewCategoryNoteContent(assignmentValue, title) {
+    return `---
+${this.plugin.settings.frontmatterKey}:
+  - "${escapeYamlDoubleQuotedString(assignmentValue)}"
+title: "${escapeYamlDoubleQuotedString(title)}"
+---
+
+`;
+  }
   openFileMenu(event, file) {
+    this.createFileMenu(file).showAtMouseEvent(event);
+  }
+  openFileMenuAtElement(element, file) {
+    const rect = element.getBoundingClientRect();
+    this.createFileMenu(file).showAtPosition({
+      x: rect.right,
+      y: rect.bottom
+    }, element.ownerDocument);
+  }
+  createFileMenu(file) {
     const categoryActionFiles = this.getFilesForCategoryAction(file);
     const menu = new import_obsidian2.Menu();
     menu.addItem((item) => {
@@ -1602,7 +1703,7 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
         this.openAssignCategoriesModal(categoryActionFiles);
       });
     });
-    menu.showAtMouseEvent(event);
+    return menu;
   }
   openFolderMenu(event, node) {
     const categoryFile = this.resolveCategoryFile(node);
@@ -1795,6 +1896,47 @@ var VirtualTreeView = class extends import_obsidian2.ItemView {
   }
   preserveSidebarScrollForNextRender() {
     this.pendingSidebarScrollTop = this.sidebarPaneEl?.scrollTop ?? null;
+  }
+  isMobilePaneLayout() {
+    return window.matchMedia("(max-width: 700px)").matches;
+  }
+  syncMobilePaneLayout() {
+    const isMobileLayout = this.isMobilePaneLayout();
+    this.contentEl.toggleClass("is-mobile-pane-layout", isMobileLayout);
+    this.contentEl.toggleClass("is-mobile-show-folders", isMobileLayout && this.mobileActivePane === "folders");
+    this.contentEl.toggleClass("is-mobile-show-notes", isMobileLayout && this.mobileActivePane === "notes");
+  }
+  setMobileActivePane(nextPane) {
+    if (this.mobileActivePane === nextPane) {
+      return;
+    }
+    this.mobileActivePane = nextPane;
+    this.syncMobilePaneLayout();
+  }
+  showMobileNotesPane() {
+    if (!this.isMobilePaneLayout()) {
+      return;
+    }
+    this.setMobileActivePane("notes");
+  }
+  renderMobilePaneSwitch(containerEl, activePane) {
+    const switchEl = containerEl.createDiv({ cls: "virtual-tree-mobile-pane-switch" });
+    this.createMobilePaneSwitchButton(switchEl, "folders", activePane, "Folders");
+    this.createMobilePaneSwitchButton(switchEl, "notes", activePane, "Notes");
+  }
+  createMobilePaneSwitchButton(containerEl, pane, activePane, label) {
+    const buttonEl = containerEl.createEl("button", {
+      cls: pane === activePane ? "virtual-tree-mobile-pane-button is-active" : "virtual-tree-mobile-pane-button",
+      attr: {
+        "aria-label": `Show ${label.toLocaleLowerCase()} pane`,
+        type: "button"
+      },
+      text: label
+    });
+    buttonEl.addEventListener("click", () => {
+      this.setMobileActivePane(pane);
+      this.render("all");
+    });
   }
   getCurrentViewKey() {
     return this.selectedSectionId ? `section:${this.selectedSectionId}` : `folder:${this.selectedFolderId}`;
@@ -2887,6 +3029,13 @@ function cleanupCategoryLabel2(label) {
 }
 function uniqueFilePaths(files) {
   return [...new Set(files.map((file) => file.path))];
+}
+function sanitizeFileBasename(value) {
+  const sanitizedValue = value.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").trim();
+  return sanitizedValue.length > 0 ? sanitizedValue : "untitled";
+}
+function escapeYamlDoubleQuotedString(value) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 function clampIndex(index, length) {
   if (length <= 0) {

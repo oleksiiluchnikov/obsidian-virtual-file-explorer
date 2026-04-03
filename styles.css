@@ -42,6 +42,14 @@
   gap: var(--size-4-1);
 }
 
+.virtual-tree-mobile-pane-switch {
+  display: none;
+}
+
+.virtual-tree-mobile-pane-button {
+  min-height: 32px;
+}
+
 .virtual-tree-content-header-meta {
   align-items: center;
   display: flex;
@@ -59,6 +67,10 @@
   align-items: center;
   display: inline-flex;
   gap: var(--size-2-2);
+}
+
+.virtual-tree-content-create-note {
+  white-space: nowrap;
 }
 
 .virtual-tree-content-selection-action {
@@ -142,7 +154,10 @@
   border: 1px solid transparent;
   border-radius: var(--radius-m);
   color: var(--text-normal);
+  display: flex;
+  flex-direction: column;
   cursor: pointer;
+  gap: var(--size-2-2);
   min-height: 44px;
   text-align: left;
 }
@@ -435,6 +450,18 @@
   width: 100%;
 }
 
+.virtual-tree-file-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.virtual-tree-file-action-button {
+  display: none;
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 44px;
+}
+
 .virtual-tree-file-row:hover {
   background: var(--background-modifier-hover);
 }
@@ -694,11 +721,90 @@
 @media (max-width: 700px) {
   .virtual-tree-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .virtual-tree-sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--background-modifier-border);
-    max-height: 40%;
+    -webkit-overflow-scrolling: touch;
+    border: none;
+    display: none;
+    max-height: none;
+    min-height: 0;
+    overscroll-behavior: contain;
+  }
+
+  .virtual-tree-content {
+    -webkit-overflow-scrolling: touch;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+
+  .virtual-tree-view.is-mobile-show-folders .virtual-tree-sidebar {
+    display: block;
+  }
+
+  .virtual-tree-view.is-mobile-show-folders .virtual-tree-content {
+    display: none;
+  }
+
+  .virtual-tree-view.is-mobile-show-notes .virtual-tree-sidebar {
+    display: none;
+  }
+
+  .virtual-tree-view.is-mobile-show-notes .virtual-tree-content {
+    display: flex;
+  }
+
+  .virtual-tree-sidebar-header,
+  .virtual-tree-content-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .virtual-tree-mobile-pane-switch {
+    display: inline-flex;
+    gap: var(--size-2-1);
+  }
+
+  .virtual-tree-mobile-pane-button {
+    background: transparent;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    min-width: 72px;
+    padding: 6px var(--size-4-2);
+  }
+
+  .virtual-tree-mobile-pane-button.is-active {
+    background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+    border-color: color-mix(in srgb, var(--interactive-accent) 36%, var(--background-modifier-border));
+    color: var(--text-normal);
+  }
+
+  .virtual-tree-file-action-button {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .virtual-tree-content-header-meta {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .virtual-tree-content-sort-controls {
+    width: 100%;
+  }
+
+  .virtual-tree-content-sort-select,
+  .virtual-tree-content-sort-property,
+  .virtual-tree-content-sort-direction {
+    max-width: none;
+    width: 100%;
+  }
+
+  .virtual-tree-content-selection-controls,
+  .virtual-tree-content-filename-toggle {
+    width: 100%;
   }
 }
