@@ -1,5 +1,5 @@
 {
-  "name": "virtual-tree-explorer",
+  "name": "virtual-file-explorer",
   "version": "0.1.0",
   "description": "Explorer and workflow framework for flat Obsidian vaults powered by frontmatter categories.",
   "main": "main.js",
